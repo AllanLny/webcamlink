@@ -27,10 +27,12 @@ final class H264Encoder {
         self.fps = max(1, fps)
         self.duration = CMTime(value: 1, timescale: CMTimeScale(max(1, fps)))
 
-        // Low-latency rate control + hardware encoder when available.
+        // Low-latency rate control + hardware encoder when available. The keys
+        // are used as literals: the constants are iOS 17.4+ only, the string
+        // keys themselves are stable.
         let specification: [String: Any] = [
-            kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder as String: true,
-            kVTVideoEncoderSpecification_EnableLowLatencyRateControl as String: true,
+            "EnableHardwareAcceleratedVideoEncoder": true,
+            "EnableLowLatencyRateControl": true,
         ]
 
         var session: VTCompressionSession?
@@ -92,7 +94,7 @@ final class H264Encoder {
             presentationTimeStamp: presentationTime,
             duration: duration,
             frameProperties: properties,
-            sourceFrameRefCon: nil,
+            sourceFrameRefcon: nil,
             infoFlagsOut: nil
         )
         if status != noErr {
