@@ -1,0 +1,32 @@
+{
+  "name": "WebcamLink (perso)",
+  "identifier": "com.allan.webcamlink.source",
+  "subtitle": "iPhone en webcam USB, qualité maximale",
+  "description": "Source AltStore personnelle pour l'app WebcamLink : transforme un iPhone en webcam USB via un client PC maison (Rust + webcam virtuelle Windows).",
+  "iconURL": "https://raw.githubusercontent.com/PLACEHOLDER_OWNER/PLACEHOLDER_REPO/main/altstore/icon.png",
+  "headerURL": "",
+  "website": "",
+  "tintColor": "#3B82F6",
+  "apps": [
+    {
+      "name": "WebcamLink",
+      "bundleIdentifier": "com.allan.webcamlink",
+      "developerName": "Allan",
+      "subtitle": "Webcam USB maison, qualité maximale",
+      "localizedDescription": "Envoie la caméra de l'iPhone au PC en USB direct (usbmuxd), sans compte développeur payant. Contrôles d'image (zoom, exposition, focus, balance des blancs, torche), toutes les qualités de l'iPhone, mode veille.\n\nRappel : l'app doit rester au premier plan (écran allumé) pendant le streaming — limite iOS.",
+      "iconURL": "https://raw.githubusercontent.com/PLACEHOLDER_OWNER/PLACEHOLDER_REPO/main/altstore/icon.png",
+      "tintColor": "#3B82F6",
+      "category": "utilities",
+      "versions": [
+        {
+          "version": "0.1.0",
+          "date": "2026-10-16",
+          "downloadURL": "https://github.com/PLACEHOLDER_OWNER/PLACEHOLDER_REPO/releases/download/v0.1.0/WebcamLink.ipa",
+          "size": 0,
+          "minOSVersion": "16.0"
+        }
+      ]
+    }
+  ],
+  "news": []
+}

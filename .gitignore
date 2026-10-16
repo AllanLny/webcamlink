@@ -1,0 +1,19 @@
+# Rust
+pc/agent/target/
+
+# C++
+pc/vcam/build/
+pc/installer/build/
+
+# iOS (généré par XcodeGen)
+ios/WebcamLink.xcodeproj/
+ios/Support/Info.plist
+ios/build/
+ios/Payload/
+ios/*.ipa
+
+# Divers
+*.log
+.DS_Store
+Thumbs.db
+__pycache__/
