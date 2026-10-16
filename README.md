@@ -26,12 +26,17 @@ altstore/             Source AltStore (source.json)
 
 ## État du projet
 
-**P0 — quasi bouclé**, bloqué sur deux actions manuelles :
+**P0 — tunnel USB validé côté transport, distribution bouclée** :
 
-1. Tunnel USB : `wcl-probe` (Rust) et `pc/tools/usbmux_probe.py` sont prêts
-   (`wcl-probe lockdown` valide toute la chaîne dès que l'iPhone est branché).
-2. Distribution : IPA non signée buildée par GitHub Actions, installée via AltStore/AltServer
-   (AltServer à installer : `altinstaller.zip`, puis `gh auth login` pour pousser le repo privé).
+1. Tunnel USB : le PC joint le listener de l'app via usbmuxd. `wcl-probe list` voit l'iPhone et
+   `Connect` réussit (0 pour un port qui écoute, 3 sinon) ; le test applicatif final est
+   `wcl-probe wcl-hello 5321` avec l'app lancée. Le mode `lockdown` ne sert plus que de diagnostic :
+   les iOS récents exigent TLS avant toute requête lockdownd.
+2. Distribution : IPA non signée buildée par GitHub Actions (workflow `build-ipa`), installée via
+   AltStore/AltServer.
+
+> Côté PC, le pilote Apple (Apple Mobile Device USB Device) est indispensable : sans lui l'iPhone
+> s'attache au pilote WPD de Windows et usbmuxd ne voit rien.
 
 **P1 — vidéo de bout en bout** :
 

@@ -48,6 +48,13 @@ fn main() -> Result<()> {
 
             let mut reply = vec![0u8; 64 * 1024];
             let count = tunnel.read(&mut reply)?;
+            if count == 0 {
+                anyhow::bail!(
+                    "lockdownd a fermé la connexion sans réponse : les iOS récents exigent TLS \
+                     (certificat d'appairage) avant toute requête. Ce mode reste un diagnostic — \
+                     pour valider le tunnel USB, utilisez `wcl-hello 5321` avec l'app lancée."
+                );
+            }
             let value: plist::Value = plist::from_bytes(&reply[..count]).context("réponse lockdownd illisible")?;
             let version = value
                 .as_dictionary()
