@@ -202,9 +202,24 @@ def run_wcl_hello(tunnel: socket.socket) -> int:
     return 0
 
 
+def run_lockdown(tunnel: socket.socket) -> int:
+    """Round-trip through Apple's lockdownd (always listening): validates the
+    whole chain — plist framing, byte-swapped Connect, device-side listener."""
+    request = plistlib.dumps({"Label": "webcamlink-probe", "Request": "GetValue", "Key": "ProductVersion"})
+    tunnel.sendall(request)
+    data = tunnel.recv(65536)
+    if not data:
+        print("Pas de réponse de lockdownd.")
+        return 1
+    reply = plistlib.loads(data)
+    print(f"lockdownd répond: ProductVersion={reply.get('Value')!r} (Type={reply.get('Type')!r})")
+    print("CHAÎNE USB OK — plist + Connect byte-swapped + listener device validés.")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("mode", nargs="?", default="list", choices=["list", "connect", "echo", "wcl-hello"])
+    parser.add_argument("mode", nargs="?", default="list", choices=["list", "connect", "echo", "lockdown", "wcl-hello"])
     parser.add_argument("port", nargs="?", type=int, default=5321)
     parser.add_argument("--send", default=None, help="texte brut à envoyer en mode echo")
     args = parser.parse_args()
@@ -243,6 +258,10 @@ def main() -> int:
     if args.mode == "wcl-hello":
         tunnel = connect_device(sock, args.port)
         return run_wcl_hello(tunnel)
+
+    if args.mode == "lockdown":
+        tunnel = connect_device(sock, 62078)
+        return run_lockdown(tunnel)
 
     return 2
 

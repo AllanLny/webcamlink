@@ -1,0 +1,24 @@
+[package]
+name = "wcl-agent"
+version = "0.1.0"
+edition = "2021"
+description = "WebcamLink PC agent — usbmux + WCLN protocol"
+license = "MIT"
+
+[lib]
+name = "wcl_agent"
+path = "src/lib.rs"
+
+[[bin]]
+name = "wcl-probe"
+path = "src/bin/probe.rs"
+
+[dependencies]
+anyhow = "1"
+plist = "1"
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
+panic = "abort"
