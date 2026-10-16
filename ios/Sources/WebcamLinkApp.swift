@@ -36,9 +36,28 @@ struct ContentView: View {
                         Text("\(server.connectedClients)")
                             .foregroundColor(.secondary)
                     }
+                    HStack {
+                        Text("Flux")
+                        Spacer()
+                        Text(server.streaming ? "en cours" : "à l'arrêt")
+                            .foregroundColor(server.streaming ? .green : .secondary)
+                    }
+                    HStack {
+                        Text("iPhone")
+                        Spacer()
+                        Text(server.statusSummary)
+                            .foregroundColor(.secondary)
+                            .multilineTextAlignment(.trailing)
+                    }
                     if let error = server.lastError {
                         Text(error).foregroundColor(.red)
                     }
+                }
+
+                Section("Caméras") {
+                    Text(server.cameraSummary)
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundColor(.secondary)
                 }
 
                 Section("Écran") {

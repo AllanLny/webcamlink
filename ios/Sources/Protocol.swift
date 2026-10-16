@@ -24,6 +24,43 @@ enum WclProtocol {
     static let maxPayload = 16 * 1024 * 1024
 }
 
+enum WclCodec: UInt8 {
+    case h264 = 0
+    case hevc = 1
+}
+
+enum WclLens: UInt8 {
+    case wide = 0
+    case ultraWide = 1
+    case telephoto = 2
+    case front = 3
+    case other = 255
+}
+
+enum WclPosition: UInt8 {
+    case back = 0
+    case front = 1
+}
+
+struct WclCapsCodec {
+    static let h264: UInt8 = 1 << 0
+    static let hevc: UInt8 = 1 << 1
+}
+
+struct WclFrameFlags {
+    static let keyframe: UInt8 = 1 << 0
+}
+
+enum WclErrorCode: UInt16 {
+    case unsupportedVersion = 1
+    case cameraPermissionDenied = 2
+    case invalidFormat = 3
+    case cameraUnavailable = 4
+    case encoderFailure = 5
+    case thermalShutdown = 6
+    case notInForeground = 7
+}
+
 struct WclFrame {
     let type: WclMessageType
     var flags: UInt16 = 0
@@ -98,6 +135,17 @@ struct WclWriter {
         u16(UInt16(clamped.count))
         data.append(contentsOf: clamped)
     }
+
+    /// `u32` longueur + octets (parameter sets H.264).
+    mutating func blob(_ value: Data) {
+        u32(UInt32(value.count))
+        data.append(value)
+    }
+
+    /// Reste du payload, sans préfixe de longueur (données d'une frame vidéo).
+    mutating func raw(_ value: Data) {
+        data.append(value)
+    }
 }
 
 struct WclReader {
@@ -118,6 +166,11 @@ struct WclReader {
         guard remaining >= 2 else { return nil }
         defer { offset += 2 }
         return UInt16(data[offset]) | (UInt16(data[offset + 1]) << 8)
+    }
+
+    mutating func i16() -> Int16? {
+        guard let raw = u16() else { return nil }
+        return Int16(bitPattern: raw)
     }
 
     mutating func u32() -> UInt32? {
@@ -144,6 +197,12 @@ struct WclReader {
         defer { offset += Int(length) }
         let slice = data.subdata(in: offset..<(offset + Int(length)))
         return String(data: slice, encoding: .utf8)
+    }
+
+    mutating func blob() -> Data? {
+        guard let length = u32(), remaining >= Int(length) else { return nil }
+        defer { offset += Int(length) }
+        return data.subdata(in: offset..<(offset + Int(length)))
     }
 }
 
@@ -182,5 +241,195 @@ struct WclHello {
             name: name,
             model: model
         )
+    }
+}
+
+// MARK: - Caps (device → PC)
+
+struct WclCameraFormat: Equatable {
+    var width: UInt16
+    var height: UInt16
+    var maxFps: UInt16
+}
+
+struct WclCamera {
+    var cameraId: UInt8
+    var position: UInt8
+    var lens: UInt8
+    var label: String
+    var formats: [WclCameraFormat]
+}
+
+struct WclCaps {
+    var cameras: [WclCamera]
+    var codecs: UInt8
+
+    func encoded() -> Data {
+        var writer = WclWriter()
+        writer.u8(UInt8(min(cameras.count, Int(UInt8.max))))
+        for camera in cameras {
+            writer.u8(camera.cameraId)
+            writer.u8(camera.position)
+            writer.u8(camera.lens)
+            writer.string(camera.label)
+            writer.u16(UInt16(min(camera.formats.count, Int(UInt16.max))))
+            for format in camera.formats {
+                writer.u16(format.width)
+                writer.u16(format.height)
+                writer.u16(format.maxFps)
+            }
+        }
+        writer.u8(codecs)
+        return writer.data
+    }
+}
+
+// MARK: - PC → device
+
+struct WclSetCamera {
+    var cameraId: UInt8
+
+    static func decode(_ payload: Data) -> WclSetCamera? {
+        var reader = WclReader(payload)
+        guard let cameraId = reader.u8() else { return nil }
+        return WclSetCamera(cameraId: cameraId)
+    }
+}
+
+struct WclSetFormat {
+    var width: UInt16
+    var height: UInt16
+    var fps: UInt16
+    var codec: UInt8
+    var bitrateKbps: UInt32
+
+    static func decode(_ payload: Data) -> WclSetFormat? {
+        var reader = WclReader(payload)
+        guard let width = reader.u16(),
+              let height = reader.u16(),
+              let fps = reader.u16(),
+              let codec = reader.u8(),
+              let bitrate = reader.u32() else { return nil }
+        return WclSetFormat(width: width, height: height, fps: fps, codec: codec, bitrateKbps: bitrate)
+    }
+}
+
+struct WclSetOptions {
+    var mirror: Bool
+    var rotation: UInt16
+    var dimPreview: Bool
+
+    static func decode(_ payload: Data) -> WclSetOptions? {
+        var reader = WclReader(payload)
+        guard let mirror = reader.u8(),
+              let rotation = reader.u16(),
+              let dim = reader.u8() else { return nil }
+        return WclSetOptions(mirror: mirror != 0, rotation: rotation, dimPreview: dim != 0)
+    }
+}
+
+/// Image controls. Every field is optional on the wire: a field that is absent
+/// keeps the current value (see `docs/protocol.md`).
+struct WclSetImage {
+    var zoomX100: UInt16 = 100
+    var exposureMode: UInt8 = 0
+    var exposureBiasEvX100: Int16 = 0
+    var iso: UInt16 = 0
+    var exposureDurationUs: UInt32 = 0
+    var focusMode: UInt8 = 0
+    var focusXX10000: UInt16 = 5000
+    var focusYX10000: UInt16 = 5000
+    var whiteBalanceMode: UInt8 = 0
+    var whiteBalanceTempK: UInt16 = 0
+    var whiteBalanceTintX100: Int16 = 0
+    var torch: Bool = false
+    var stabilization: UInt8 = 0
+    var hdr: Bool = false
+
+    /// Applies the fields present in `payload` on top of the current state.
+    func updated(with payload: Data) -> WclSetImage {
+        var reader = WclReader(payload)
+        var value = self
+        if let zoom = reader.u16() { value.zoomX100 = zoom }
+        if let mode = reader.u8() { value.exposureMode = mode }
+        if let bias = reader.i16() { value.exposureBiasEvX100 = bias }
+        if let iso = reader.u16() { value.iso = iso }
+        if let duration = reader.u32() { value.exposureDurationUs = duration }
+        if let mode = reader.u8() { value.focusMode = mode }
+        if let x = reader.u16() { value.focusXX10000 = x }
+        if let y = reader.u16() { value.focusYX10000 = y }
+        if let mode = reader.u8() { value.whiteBalanceMode = mode }
+        if let temperature = reader.u16() { value.whiteBalanceTempK = temperature }
+        if let tint = reader.i16() { value.whiteBalanceTintX100 = tint }
+        if let torch = reader.u8() { value.torch = torch != 0 }
+        if let stabilization = reader.u8() { value.stabilization = stabilization }
+        if let hdr = reader.u8() { value.hdr = hdr != 0 }
+        return value
+    }
+}
+
+// MARK: - device → PC
+
+struct WclVideoConfig {
+    var codec: UInt8
+    var width: UInt16
+    var height: UInt16
+    var fps: UInt16
+    var parameterSets: Data
+
+    func encoded() -> Data {
+        var writer = WclWriter()
+        writer.u8(codec)
+        writer.u16(width)
+        writer.u16(height)
+        writer.u16(fps)
+        writer.blob(parameterSets)
+        return writer.data
+    }
+}
+
+struct WclVideoFrame {
+    var ptsUs: UInt64
+    var flags: UInt8
+    var data: Data
+
+    func encoded() -> Data {
+        var writer = WclWriter()
+        writer.u64(ptsUs)
+        writer.u8(flags)
+        writer.raw(data)
+        return writer.data
+    }
+}
+
+struct WclStatus {
+    var thermalState: UInt8
+    var batteryPercent: UInt8
+    var charging: Bool
+    var actualBitrateKbps: UInt32
+    var actualFpsX100: UInt16
+    var cameraId: UInt8
+
+    func encoded() -> Data {
+        var writer = WclWriter()
+        writer.u8(thermalState)
+        writer.u8(batteryPercent)
+        writer.u8(charging ? 1 : 0)
+        writer.u32(actualBitrateKbps)
+        writer.u16(actualFpsX100)
+        writer.u8(cameraId)
+        return writer.data
+    }
+}
+
+struct WclProtocolError {
+    var code: WclErrorCode
+    var message: String
+
+    func encoded() -> Data {
+        var writer = WclWriter()
+        writer.u16(code.rawValue)
+        writer.string(message)
+        return writer.data
     }
 }

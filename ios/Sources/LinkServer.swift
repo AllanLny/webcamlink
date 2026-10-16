@@ -3,8 +3,9 @@ import Foundation
 import Network
 import UIKit
 
-/// P0 « hello » server: listens on 127.0.0.1:5321 (reachable from the PC through
-/// usbmuxd), speaks the WCLN framing, answers Hello and echoes Heartbeats.
+/// TCP server: listens on 127.0.0.1:5321 (reachable from the PC through
+/// usbmuxd), speaks the WCLN framing and drives one `LinkSession` at a time —
+/// a new connection replaces the previous one.
 final class LinkServer: ObservableObject {
     static let shared = LinkServer()
     static let port: UInt16 = 5321
@@ -14,10 +15,16 @@ final class LinkServer: ObservableObject {
     @Published private(set) var connectedClients = 0
     @Published private(set) var lastError: String?
     @Published private(set) var logLines: [String] = []
+    @Published private(set) var streaming = false
+    @Published private(set) var cameraSummary = "—"
+    @Published private(set) var statusSummary = "—"
 
     private let queue = DispatchQueue(label: "com.allan.webcamlink.server")
     private var listener: NWListener?
-    private var connections: [ObjectIdentifier: NWConnection] = [:]
+    private var connection: NWConnection?
+    private var pendingBytes = 0
+    private var session: LinkSession?
+    private var cameras: [WclCameraDescriptor] = []
     private var usedFallbackBinding = false
 
     private static let timeFormatter: DateFormatter = {
@@ -36,20 +43,31 @@ final class LinkServer: ObservableObject {
 
     func stop() {
         queue.async {
+            self.session?.close()
+            self.session = nil
+            self.connection?.cancel()
+            self.connection = nil
             self.listener?.cancel()
             self.listener = nil
-            for connection in self.connections.values {
-                connection.cancel()
-            }
-            self.connections.removeAll()
             self.publish {
                 self.connectedClients = 0
+                self.streaming = false
             }
         }
     }
 
     private func startOnQueue() {
         guard listener == nil else { return }
+
+        if AVCaptureDevice.authorizationStatus(for: .video) == .notDetermined {
+            AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
+                self?.log("Accès caméra: \(granted ? "accordé" : "refusé")")
+                self?.queue.async { self?.refreshCameras() }
+            }
+        }
+
+        refreshCameras()
+
         do {
             let parameters = NWParameters.tcp
             parameters.allowLocalEndpointReuse = true
@@ -64,6 +82,16 @@ final class LinkServer: ObservableObject {
             log("ERREUR: échec de création du listener — \(error.localizedDescription)")
             publish { self.lastError = error.localizedDescription }
         }
+    }
+
+    private func refreshCameras() {
+        cameras = CameraController.discover()
+        publish {
+            self.cameraSummary = self.cameras.isEmpty
+                ? "aucune caméra (autorisation ?)"
+                : self.cameras.map { "\($0.label): \($0.formats.count) format(s)" }.joined(separator: " · ")
+        }
+        log("Caméras détectées: \(cameras.count)")
     }
 
     private func attach(_ listener: NWListener) {
@@ -120,10 +148,30 @@ final class LinkServer: ObservableObject {
     // MARK: - Connections
 
     private func handle(_ connection: NWConnection) {
-        let id = ObjectIdentifier(connection)
-        connections[id] = connection
-        publish { self.connectedClients = self.connections.count }
-        log("Client connecté (\(connections.count) actif(s))")
+        // One client at a time: the new connection replaces the previous one.
+        self.session?.close()
+        self.session = nil
+        self.connection?.cancel()
+        self.connection = connection
+        self.pendingBytes = 0
+
+        publish { self.connectedClients = 1 }
+        log("Client connecté")
+
+        let session = LinkSession(
+            queue: queue,
+            cameras: cameras,
+            send: { [weak self] frame in self?.send(frame) },
+            pendingBytes: { [weak self] in self?.pendingBytes ?? 0 },
+            log: { [weak self] message in self?.log(message) }
+        )
+        session.onStreamingChanged = { [weak self] streaming in
+            self?.publish { self?.streaming = streaming }
+        }
+        session.onStatusText = { [weak self] text in
+            self?.publish { self?.statusSummary = text }
+        }
+        self.session = session
 
         let reader = WclFrameReader()
 
@@ -132,7 +180,7 @@ final class LinkServer: ObservableObject {
             switch state {
             case .ready:
                 self.log("Canal prêt")
-                self.send(self.makeHelloFrame(), on: connection)
+                self.session?.sendHello()
             case .failed(let error):
                 self.log("Client en échec: \(error.localizedDescription)")
                 connection.cancel()
@@ -147,11 +195,11 @@ final class LinkServer: ObservableObject {
         }
 
         func receiveLoop() {
-            connection.receive(minimumIncompleteLength: 1, maximumLength: 256 * 1024) { [weak self] data, _, isComplete, error in
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 256 * 1024) {
+                [weak self] data, _, isComplete, error in
                 if let data, !data.isEmpty {
-                    let frames = reader.append(data)
-                    for frame in frames {
-                        self?.handle(frame: frame, on: connection)
+                    for frame in reader.append(data) {
+                        self?.session?.handle(frame: frame)
                     }
                 }
                 if let error {
@@ -173,62 +221,29 @@ final class LinkServer: ObservableObject {
     }
 
     private func remove(_ connection: NWConnection) {
-        connections.removeValue(forKey: ObjectIdentifier(connection))
-        publish { self.connectedClients = self.connections.count }
+        guard self.connection === connection else { return }
+        session?.close()
+        session = nil
+        self.connection = nil
+        pendingBytes = 0
+        publish {
+            self.connectedClients = 0
+            self.streaming = false
+            self.statusSummary = "—"
+        }
     }
 
-    private func send(_ frame: WclFrame, on connection: NWConnection) {
-        connection.send(content: frame.encoded(), completion: .contentProcessed { [weak self] error in
+    private func send(_ frame: WclFrame) {
+        guard let connection else { return }
+        let data = frame.encoded()
+        pendingBytes += data.count
+        connection.send(content: data, completion: .contentProcessed { [weak self] error in
+            guard let self else { return }
             if let error {
-                self?.log("Envoi impossible: \(error.localizedDescription)")
+                self.log("Envoi impossible: \(error.localizedDescription)")
             }
+            self.pendingBytes -= data.count
         })
-    }
-
-    // MARK: - Protocol handling (P0: Hello + Heartbeat)
-
-    private func handle(frame: WclFrame, on connection: NWConnection) {
-        switch frame.type {
-        case .hello:
-            if let hello = WclHello.decode(frame.payload) {
-                log("Hello reçu — role=\(hello.role) app=\(hello.appVersion) name=« \(hello.name) » model=\(hello.model) v\(hello.minVersion)–\(hello.maxVersion)")
-            } else {
-                log("Hello illisible (\(frame.payload.count) octets)")
-            }
-            send(makeHelloFrame(), on: connection)
-
-        case .heartbeat:
-            var reader = WclReader(frame.payload)
-            var writer = WclWriter()
-            writer.u64(reader.u64() ?? 0)
-            send(WclFrame(type: .heartbeat, payload: writer.data), on: connection)
-            log("Heartbeat écho")
-
-        default:
-            log("Message \(frame.type) reçu (\(frame.payload.count) octets) — ignoré en P0")
-        }
-    }
-
-    private func makeHelloFrame() -> WclFrame {
-        let hello = WclHello(
-            role: 1,
-            appVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.1.0",
-            name: UIDevice.current.name,
-            model: Self.deviceModel()
-        )
-        return WclFrame(type: .hello, payload: hello.encoded())
-    }
-
-    static func deviceModel() -> String {
-        var systemInfo = utsname()
-        uname(&systemInfo)
-        let mirror = Mirror(reflecting: systemInfo.machine)
-        var identifier = ""
-        for child in mirror.children {
-            guard let value = child.value as? Int8, value != 0 else { break }
-            identifier.append(String(UnicodeScalar(UInt8(bitPattern: value))))
-        }
-        return identifier.isEmpty ? "iOS" : identifier
     }
 
     // MARK: - Utilities
@@ -249,5 +264,17 @@ final class LinkServer: ObservableObject {
         } else {
             DispatchQueue.main.async(execute: work)
         }
+    }
+
+    static func deviceModel() -> String {
+        var systemInfo = utsname()
+        uname(&systemInfo)
+        let mirror = Mirror(reflecting: systemInfo.machine)
+        var identifier = ""
+        for child in mirror.children {
+            guard let value = child.value as? Int8, value != 0 else { break }
+            identifier.append(String(UnicodeScalar(UInt8(bitPattern: value))))
+        }
+        return identifier.isEmpty ? "iOS" : identifier
     }
 }

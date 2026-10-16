@@ -12,21 +12,53 @@ licence Apple payante (distribution **AltStore**), sans audio.
 
 ```
 ios/                  App iOS (SwiftUI, XcodeGen — pas besoin de Mac local)
-pc/agent/             Agent PC (Rust) : usbmux, protocole, décodage Media Foundation, tray
-pc/vcam/              DLL webcam virtuelle (C++/WRL, Frame Server)
-pc/installer/         MSI (WiX) : agent + DLL + enregistrement + autostart
-pc/tools/             Outils de dev (sonde usbmux, fakephone)
+pc/agent/             Agent PC (Rust) : usbmux, protocole, décodage Media Foundation, aperçu
+  src/bin/wcl-probe     outil de validation du tunnel USB (P0)
+  src/bin/wcl-mkh264    génère un clip H.264 de test (Media Foundation, sans ffmpeg)
+  src/bin/wcl-fakephone rejoue ce clip comme un faux iPhone, en WCLN sur TCP
+  src/bin/wcl-view      client PC complet : session + décodage + aperçu + stats
+pc/vcam/              DLL webcam virtuelle (C++/WRL, Frame Server)          — P2
+pc/installer/         MSI (WiX) : agent + DLL + enregistrement + autostart   — P5
+pc/tools/             Sonde usbmux Python (P0)
 altstore/             Source AltStore (source.json)
 .github/workflows/    CI : build IPA non signée sur runner macOS
 ```
 
 ## État du projet
 
-**P0 en cours** — valider les deux risques principaux :
+**P0 — quasi bouclé**, bloqué sur deux actions manuelles :
 
-1. Tunnel USB : le PC joint le listener de l'app iOS via usbmuxd
-   (`python pc/tools/usbmux_probe.py wcl-hello 5321`).
-2. Distribution : IPA non signée buildée par GitHub Actions, installée via AltStore/AltServer.
+1. Tunnel USB : `wcl-probe` (Rust) et `pc/tools/usbmux_probe.py` sont prêts
+   (`wcl-probe lockdown` valide toute la chaîne dès que l'iPhone est branché).
+2. Distribution : IPA non signée buildée par GitHub Actions, installée via AltStore/AltServer
+   (AltServer à installer : `altinstaller.zip`, puis `gh auth login` pour pousser le repo privé).
+
+**P1 — vidéo de bout en bout** :
+
+- Côté PC : terminé et validé hors iPhone. `wcl-view` négocie la session
+  (Hello/Caps/SetCamera/SetFormat/Start), décode le H.264 (Media Foundation MFT,
+  `CODECAPI_AVLowLatencyMode`) et affiche l'aperçu + les stats. Chaîne validée de bout en bout
+  avec `wcl-mkh264` → `wcl-fakephone` → `wcl-view` en 1280x720@30, ~8 Mbit/s, décodage ~3 ms/frame,
+  chaque frame décodée correspondant exactement à sa source (tests `tests/mf_pipeline.rs`).
+- Côté iOS : écrit (capture AVCaptureSession, encodage VideoToolbox low-latency sans B-frames,
+  `Caps` complet, `SetCamera`/`SetFormat`/`SetOptions`/`SetImage`/`Start`/`Stop`/`RequestKeyframe`,
+  `VideoConfig` + `VideoFrame` + `Status` + backpressure) — **reste à compiler via la CI macOS**
+  puis à tester sur iPhone réel.
+
+Prochaines étapes côté toi : `gh auth login` (pour pousser le repo privé et lancer la CI), brancher
+l'iPhone pour `wcl-probe lockdown`, puis installer l'IPA via AltServer.
+
+## Développement sans iPhone
+
+```powershell
+cd pc/agent
+cargo test                                   # protocole, session (loopback), Media Foundation
+cargo run --release --bin wcl-mkh264 -- test.wclc --size 1280x720 --seconds 6
+cargo run --release --bin wcl-fakephone -- test.wclc          # écoute sur 127.0.0.1:5321
+cargo run --release --bin wcl-view -- --tcp 127.0.0.1:5321    # aperçu (ajouter --no-window pour les mesures)
+```
+
+Avec un iPhone branché (app lancée, écran allumé) : `wcl-view` sans `--tcp` passe par usbmuxd.
 
 ## Build & installation (P0)
 

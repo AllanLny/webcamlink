@@ -13,9 +13,35 @@ path = "src/lib.rs"
 name = "wcl-probe"
 path = "src/bin/probe.rs"
 
+[[bin]]
+name = "wcl-mkh264"
+path = "src/bin/mkh264.rs"
+
+[[bin]]
+name = "wcl-fakephone"
+path = "src/bin/fakephone.rs"
+
+[[bin]]
+name = "wcl-view"
+path = "src/bin/view.rs"
+
 [dependencies]
 anyhow = "1"
 plist = "1"
+log = "0.4"
+env_logger = { version = "0.11", default-features = false, features = ["auto-color", "humantime"] }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_Media_MediaFoundation",
+    "Win32_System_Com",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Ole",
+    "Win32_System_Variant",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 [profile.release]
 opt-level = "s"

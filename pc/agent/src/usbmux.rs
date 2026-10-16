@@ -53,7 +53,7 @@ impl MuxStream {
         let length = u32::from_le_bytes([header[0], header[1], header[2], header[3]]) as usize;
         let message_type = u32::from_le_bytes([header[8], header[9], header[10], header[11]]);
         let tag = u32::from_le_bytes([header[12], header[13], header[14], header[15]]);
-        if length < HEADER_SIZE || length > MAX_PAYLOAD {
+        if !(HEADER_SIZE..=MAX_PAYLOAD).contains(&length) {
             bail!("longueur usbmux suspecte: {length}");
         }
         let mut body = vec![0u8; length - HEADER_SIZE];

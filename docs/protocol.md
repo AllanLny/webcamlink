@@ -132,6 +132,16 @@ Un champ absent est laissé inchangé ; une valeur inconnue est ignorée.
 | `frame_flags` | u8 | bit0 = keyframe (IDR) |
 | `data` | reste du payload | une access unit Annex-B |
 
+### Contraintes du flux H.264
+
+- **Pas de B-frames** (`AllowFrameReordering = false` côté VideoToolbox) : le décodeur PC tourne en
+  mode low-latency, donc sans file de réordonnancement — l'ordre de décodage doit être l'ordre
+  d'affichage.
+- IDR au plus tard toutes les 2 s, et immédiatement sur `RequestKeyframe` ; le payload d'un IDR
+  embarque SPS/PPS en bande (en plus du `VideoConfig` de la session).
+- Le décodeur Media Foundation en mode low-latency ne garantit pas les horodatages de sortie :
+  `pts_us` sert à la mesure et au diagnostic (latence, gigue), pas à réordonner les frames.
+
 ### 0x30 Heartbeat
 
 `send_time_us` u64 (horloge de l'émetteur). Le pair répond avec son propre heartbeat. Silence total
