@@ -7,6 +7,7 @@
 #include <wrl/implements.h>
 
 #include <atomic>
+#include <cstdio>
 
 #include "../include/wcl_shm.h"
 #include "virtual_camera.h"
@@ -21,6 +22,26 @@ namespace {
 
 std::atomic<LONG> g_server_locks{0};
 std::atomic<bool> g_mf_started{false};
+
+/// Debug log in %TEMP%\webcamlink-vcam.log: the DLL runs inside the Frame
+/// Server, so a file is the only way to see what happens.
+void Log(const wchar_t* message) {
+    wchar_t path[MAX_PATH]{};
+    DWORD length = GetTempPathW(MAX_PATH, path);
+    if (length == 0) {
+        return;
+    }
+    wcscat_s(path, L"webcamlink-vcam.log");
+    FILE* file = nullptr;
+    if (_wfopen_s(&file, path, L"a") != 0 || !file) {
+        return;
+    }
+    SYSTEMTIME now{};
+    GetLocalTime(&now);
+    fwprintf(file, L"[%02d:%02d:%02d.%03d] %s\n", now.wHour, now.wMinute, now.wSecond,
+             now.wMilliseconds, message);
+    fclose(file);
+}
 
 void EnsureMediaFoundation() {
     if (g_mf_started.exchange(true)) {
@@ -41,14 +62,25 @@ public:
         if (outer) {
             return CLASS_E_NOAGGREGATION;
         }
+        wchar_t guid[64]{};
+        StringFromGUID2(riid, guid, 64);
+        wchar_t line[192];
+        swprintf_s(line, L"CreateInstance(riid=%s)", guid);
+        Log(line);
+
         EnsureMediaFoundation();
 
         ComPtr<IUnknown> source;
         HRESULT hr = wcl::CreateVirtualCamera(&source);
         if (FAILED(hr)) {
+            Log(L"CreateVirtualCamera a échoué");
             return hr;
         }
-        return source->QueryInterface(riid, object);
+        hr = source->QueryInterface(riid, object);
+        swprintf_s(line, L"CreateInstance(riid=%s) -> 0x%08lX", guid,
+                   static_cast<unsigned long>(hr));
+        Log(line);
+        return hr;
     }
 
     STDMETHODIMP LockServer(BOOL lock) override {
@@ -68,6 +100,11 @@ STDAPI DllGetClassObject(REFCLSID clsid, REFIID riid, void** object) {
         return E_POINTER;
     }
     *object = nullptr;
+    wchar_t clsid_text[64]{};
+    StringFromGUID2(clsid, clsid_text, 64);
+    wchar_t line[160];
+    swprintf_s(line, L"DllGetClassObject(%s)", clsid_text);
+    Log(line);
     if (!IsEqualCLSID(clsid, CLSID_WebcamLinkVirtualCamera)) {
         return CLASS_E_CLASSNOTAVAILABLE;
     }

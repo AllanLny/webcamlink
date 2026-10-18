@@ -136,5 +136,21 @@ int Register(bool enable) {
 int wmain(int argc, wchar_t** argv) {
     const bool enable = !(argc > 1 && (wcscmp(argv[1], L"--unregister") == 0 ||
                                        wcscmp(argv[1], L"-u") == 0));
-    return Register(enable);
+
+    // MFCreateVirtualCamera returns CO_E_NOTINITIALIZED without these.
+    const HRESULT com = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    const HRESULT mf = MFStartup(MF_VERSION);
+    if (FAILED(mf)) {
+        wprintf(L"MFStartup a échoué : 0x%08lX\n", static_cast<unsigned long>(mf));
+    }
+
+    const int result = Register(enable);
+
+    if (SUCCEEDED(mf)) {
+        MFShutdown();
+    }
+    if (SUCCEEDED(com)) {
+        CoUninitialize();
+    }
+    return result;
 }
