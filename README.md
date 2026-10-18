@@ -1,116 +1,214 @@
 # WebcamLink
 
-iPhone en **webcam USB** : app iOS maison + client PC léger. Projet **personnel**, sans Mac, sans
-licence Apple payante (distribution **AltStore**), sans audio.
+**Ton iPhone comme webcam USB sur Windows 11** — sans Mac, sans licence Apple payante, sans audio.
+L'app iOS capture et encode en H.264 ; un agent PC décode le flux et alimente une **caméra virtuelle**
+que voient Teams, Zoom, OBS, l'app Caméra, etc.
 
-## Documentation
+## Sommaire
 
-- [Protocole v1](docs/protocol.md) — source unique de vérité du lien iPhone ↔ PC.
-- Plan de référence : `~/.commandcode/plans/webcamlink-iphone-webcam-usb.md`.
+- [Fonctionnement](#fonctionnement)
+- [Prérequis](#prérequis)
+- [Installation](#installation)
+- [Réglages](#réglages)
+- [Utilisation](#utilisation)
+- [Dépannage](#dépannage)
+- [Développement sans iPhone](#développement-sans-iphone)
+- [Structure du dépôt](#structure-du-dépôt)
+- [État du projet](#état-du-projet)
+- [Contraintes iOS](#contraintes-ios)
+- [Distribution de l'app iOS](#distribution-de-lapp-ios)
 
-## Structure
+## Fonctionnement
 
 ```
-ios/                  App iOS (SwiftUI, XcodeGen — pas besoin de Mac local)
-pc/agent/             Agent PC (Rust) : usbmux, protocole, décodage Media Foundation, aperçu
-  src/bin/wcl-probe     outil de validation du tunnel USB (P0)
-  src/bin/wcl-mkh264    génère un clip H.264 de test (Media Foundation, sans ffmpeg)
-  src/bin/wcl-fakephone rejoue ce clip comme un faux iPhone, en WCLN sur TCP
-  src/bin/wcl-view      client PC complet : session + décodage + aperçu + stats
-  src/bin/wcl-agent     démon PC : session + décodage + publication en mémoire partagée (P2)
-pc/vcam/              DLL webcam virtuelle (C++/WRL, Frame Server) + outil d'enregistrement — P2
-pc/installer/         MSI (WiX) : agent + DLL + enregistrement + autostart   — P5
-pc/tools/             Sonde usbmux Python (P0)
-altstore/             Source AltStore (source.json)
-.github/workflows/    CI : build IPA non signée sur runner macOS
+iPhone (app WebcamLink)                        PC (Windows 11 x64)
+  AVCaptureSession + VideoToolbox                 wcl-tray    icône + réglages
+  encodage H.264                                  wcl-agent   session USB + décodage
+        │                                              │
+        └──── USB (usbmuxd) · protocole WCLN ──────────┘
+                                                       │ mémoire partagée (NV12)
+                                                       ▼
+                                 Frame Server  ←  wcl-vcam.dll (source média)
+                                                       │
+                                                       ▼
+                                         Teams, Zoom, OBS, app Caméra…
 ```
 
-## État du projet
+- Le protocole iPhone ↔ PC est décrit dans [docs/protocol.md](docs/protocol.md) ; la mémoire partagée
+  agent ↔ DLL dans [docs/shm.md](docs/shm.md).
+- La caméra virtuelle est créée avec `MFCreateVirtualCamera` : elle n'existe pour Windows qu'après un
+  **enregistrement** (une fois, en administrateur — voir Installation).
 
-**P0 — terminé et validé sur iPhone réel** :
+## Prérequis
 
-1. Tunnel USB : `wcl-probe wcl-hello 5321` reçoit le `Hello` de l'app et l'écho du `Heartbeat`
-   (« TUNNEL USB OK — round-trip WCLN complet validé »). Le mode `lockdown` ne sert plus que de
-   diagnostic : les iOS récents exigent TLS avant toute requête lockdownd.
-2. Distribution : IPA non signée buildée par GitHub Actions (workflow `build-ipa`), installée avec
-   **Sideloadly** (signature avec un Apple ID gratuit ; l'app est réenrôlée pour l'auto-refresh).
-   Sideloadly mange le bundle ID (`com.allan.webcamlink.L5APTZGU7R`, `ALTBundleIdentifier` = l'original).
+### PC
 
-> Côté PC, le pilote Apple (Apple Mobile Device USB Device) est indispensable : sans lui l'iPhone
-> s'attache au pilote WPD de Windows et usbmuxd ne voit rien. Sideloadly a aussi besoin d'**Apple
-> Application Support** (`winget install Apple.AppleApplicationSupport.x64`) et refuse les IP
-> bloquées par Apple pour GSA (503) — un partage de connexion iPhone contourne le blocage.
+| Élément | Détail |
+|---|---|
+| Système | **Windows 11 x64**, build **22000** minimum (`MFCreateVirtualCamera` n'existe pas avant) |
+| Droits | un shell **administrateur** une fois, pour enregistrer la caméra virtuelle |
+| Exécution | **Visual C++ Redistributable 2015-2022 x64** (fourni avec VS Build Tools) |
+| Pilote iPhone | **Apple Mobile Device Support** (ou l'app *Apple Devices*) : sans lui, Windows attache l'iPhone au pilote WPD et l'agent ne le voit pas |
 
-**P1 — vidéo de bout en bout, validée sur iPhone réel (1920x1080 @ 30 fps)** :
+### Compilation
 
-- iOS : capture AVCaptureSession, encodage VideoToolbox low-latency sans B-frames, `Caps` complet,
-  `SetCamera`/`SetFormat`/`SetOptions`/`Start`/`Stop`/`RequestKeyframe`, `VideoConfig` +
-  `VideoFrame` + `Status`, backpressure.
-- PC : `wcl-view` négocie la session, décode le H.264 (Media Foundation, `CODECAPI_AVLowLatencyMode`)
-  et affiche l'aperçu + les stats.
-- Mesures réelles : **~20 Mbit/s**, décodage **12,4 ms** + rendu **7 ms** (≈19 ms de pipeline).
-  La chaîne offline (`wcl-mkh264` → `wcl-fakephone` → `wcl-view`) reste la base des tests sans iPhone.
-- Limite corrigée en 0.1.1 : quand iOS suspend l'app, le listener meurt — il est désormais recréé
-  automatiquement au retour au premier plan (`didBecomeActive`) et le PC reçoit l'erreur
-  « arrière-plan » avant la suspension.
+| Outil | Version / composant |
+|---|---|
+| Visual Studio **Build Tools 2022** | charge de travail « Développement Desktop en C++ » (MSVC v143 + Windows SDK) |
+| Windows SDK | 10.0.22000 ou plus récent (le projet est compilé avec 10.0.26100) |
+| CMake | ≥ 3.20 (fourni avec les Build Tools) |
+| Rust | toolchain **stable**, cible MSVC (`rustup default stable-msvc`) |
 
-**P2 — webcam virtuelle (en cours)** :
+### iPhone
 
-- `docs/shm.md` : contrat de mémoire partagée (en-tête + 3 slots NV12 + seqlock) entre l'agent et la
-  DLL hébergée par le **Frame Server**. Les objets `Global\` sont créés par la DLL (le Frame Server
-  tourne en session 0, seul endroit où `SeCreateGlobalPrivilege` est disponible) et ouverts par
-  l'agent, qui les détecte en réessayant `OpenFileMapping`.
-- `wcl-agent` : attend la caméra virtuelle, lance la session iPhone à l'ouverture, envoie `Stop`
-  2 s après la fermeture, retente chaque seconde en cas d'échec.
-- `wcl-vcam.dll` : source média `IMFMediaSourceEx` (1 flux NV12, image de remplacement quand
-  l'iPhone ne streame pas), enregistrée via `MFCreateVirtualCamera`
-  (`mfsensorgroup.dll`, catégorie `KSCATEGORY_VIDEO_CAMERA`) par `wcl-vcam-register.exe` (admin).
-- `wcl-tray.exe` : icône de notification — réglages (résolution, images/s, débit, caméra iPhone
-  avant/arrière/ultra grand-angle, miroir), démarrage/arrêt de l'agent, ouverture du journal,
-  « Démarrer avec Windows » (agent + icône au login).
-- Réglages partagés : `%ProgramData%\WebcamLink\config.ini`. La DLL le lit à l'enregistrement : la
-  résolution et les images/s s'appliquent **au prochain démarrage de Windows** ; l'agent le relit à
-  chaque ouverture de la caméra (caméra, débit, miroir immédiats).
-- Journal unique : `%ProgramData%\WebcamLink\vcam.log` (lignes horodatées + PID, lisible depuis la
-  session utilisateur alors que le Frame Server tourne en session 0).
+| Élément | Détail |
+|---|---|
+| iOS | **16.0** ou plus récent |
+| App | WebcamLink installée via AltStore/Sideloadly (Apple ID gratuit, expire après 7 jours) |
+| État | app **au premier plan**, écran allumé (voir [Contraintes iOS](#contraintes-ios)) |
 
-```powershell
-# Compilation (VS Build Tools 2022 + CMake)
-cmake -S pc/vcam -B pc/vcam/build -G "Visual Studio 17 2022" -A x64
-cmake --build pc/vcam/build --config Release
-# Enregistrement (shell administrateur ; --unregister pour retirer)
-pc\vcam\build\bin\Release\wcl-vcam-register.exe
-# Agent : attend que la caméra soit ouverte par une application
-pc\agent\target\release\wcl-agent.exe
-# Icône de notification (réglages, contrôle de l'agent, démarrage auto)
-pc\agent\target\release\wcl-tray.exe
+## Installation
+
+1. **Compiler** (depuis la racine du dépôt) :
+   ```powershell
+   cargo build --release --manifest-path pc/agent/Cargo.toml
+   cmake -S pc/vcam -B pc/vcam/build -G "Visual Studio 17 2022" -A x64
+   cmake --build pc/vcam/build --config Release
+   ```
+
+2. **Enregistrer la caméra virtuelle** (shell **administrateur**, une seule fois) :
+   ```powershell
+   pc\vcam\build\bin\Release\wcl-vcam-register.exe
+   ```
+   Attendu : `Caméra virtuelle "WebcamLink" enregistrée`. Pour la retirer : `--unregister` (admin).
+
+3. **Lancer l'icône de notification** :
+   ```powershell
+   pc\agent\target\release\wcl-tray.exe
+   ```
+   Dans ses réglages, cocher **« Démarrer avec Windows »** : l'agent (c'est lui qui connecte l'iPhone)
+   et l'icône se lanceront au login.
+   Astuce : créer un raccourci vers `wcl-tray.exe` dans le menu Démarrer pour la retrouver par la
+   recherche Windows (le MSI de P5 le fera automatiquement).
+
+4. **Installer l'app iOS** (voir [Distribution](#distribution-de-lapp-ios)), l'ouvrir, la laisser au
+   premier plan.
+
+5. **Ouvrir la caméra** « WebcamLink (Caméra virtuelle Windows) » dans Teams, Zoom, OBS ou l'app
+   Caméra. L'agent connecte l'iPhone en ~1 s.
+
+**Mise à jour** : après un `git pull`, recompiler (étape 1). Si la caméra est déjà enregistrée, le
+Frame Server peut garder l'ancienne DLL en mémoire — refaire l'étape 2 (désenregistrer, redémarrer le
+service **FrameServer**, recompiler, réenregistrer) pour être sûr de tester le bon binaire.
+
+## Réglages
+
+Clic gauche sur l'icône (ou raccourci « WebcamLink » du menu Démarrer) → fenêtre de réglages :
+résolution (**480p → 4K**), images/s (30/60), débit (**5 → 100 Mbit/s**), caméra iPhone (automatique,
+arrière large / ultra grand-angle / télé, avant), miroir, démarrage avec Windows.
+
+- **Caméra, débit, miroir** : appliqués **à chaud**, même pendant un flux — le miroir instantanément,
+  caméra et débit en ~1 s (reconfiguration de la capture iPhone).
+- **Résolution, images/s** : font partie du format négocié avec l'application ; ils s'appliquent au
+  **prochain démarrage de Windows** (réenregistrement de la caméra).
+- Les réglages sont écrits dans `%ProgramData%\WebcamLink\config.ini`, modifiable à la main :
+
+```ini
+[video]
+width=1920
+height=1080
+fps=30
+bitrate_kbps=20000
+[camera]
+preference=auto
+mirror=0
 ```
+
+| Clé | Valeurs | Défaut |
+|---|---|---|
+| `width` / `height` | 160–3840 / 120–2160 — 4K = plafond de la mémoire partagée | 1920 / 1080 |
+| `fps` | 1–60 | 30 |
+| `bitrate_kbps` | 500–100000 | 20000 |
+| `preference` | `auto`, `back_wide`, `back_ultra_wide`, `back_tele`, `front` | `auto` |
+| `mirror` | `0` / `1` | `0` |
+
+> Une valeur hors bornes est ramenée dans la plage. Les commentaires ne sont pas acceptés dans les
+> lignes de valeurs (la DLL lit le fichier avec les API INI de Windows).
+
+## Utilisation
+
+Menu de l'icône (clic droit) : **Réglages…**, **Démarrer/Arrêter l'agent**, **Ouvrir le journal**,
+**Quitter**.
+
+L'agent n'a rien à faire manuellement : quand une application ouvre la caméra, il connecte l'iPhone ;
+il envoie `Stop` 2 s après la dernière fermeture, et réessaie chaque seconde en cas d'échec. Sans
+iPhone (ou app en arrière-plan), la caméra affiche un **dégradé sombre** : c'est l'image de
+remplacement, utile pour vérifier la chaîne PC → applications.
+
+## Dépannage
+
+| Symptôme | Cause probable | Solution |
+|---|---|---|
+| La caméra n'apparaît dans aucune appli | non enregistrée, shell non admin, ou Windows 10 | relancer `wcl-vcam-register.exe` en administrateur ; Windows 11 build 22000+ requis |
+| Dégradé sombre au lieu de l'image | agent arrêté, iPhone absent/déverrouillé, app iOS en arrière-plan | icône → « Démarrer l'agent », brancher l'iPhone, ouvrir l'app au premier plan |
+| Journal : `producteur … ≠ format annoncé` | l'iPhone ne fait pas le format choisi (ex. 4K avec la caméra avant, limitée à 1080p) | choisir un format supporté par cette caméra |
+| La résolution ne change pas après réglage | format figé à l'enregistrement de la caméra | redémarrer Windows (ou réenregistrer la caméra) |
+| Après une recompilation, l'ancienne DLL tourne encore | le Frame Server garde la DLL chargée | `wcl-vcam-register.exe --unregister`, redémarrer le service **FrameServer**, recompiler, réenregistrer |
+| L'icône du menu Démarrer garde l'ancienne image | cache d'icônes de Windows | relancer l'Explorateur ou redémarrer |
+
+**Journaux** :
+- `%ProgramData%\WebcamLink\vcam.log` — DLL et Frame Server (un accès/erreur par ligne, avec horodatage
+  et PID du processus).
+- `%ProgramData%\WebcamLink\tray.log` — clics et erreurs de l'icône.
+- L'agent écrit sur sa sortie standard : pour voir ses messages, lancer `wcl-agent.exe` dans un
+  terminal.
 
 ## Développement sans iPhone
 
 ```powershell
 cd pc/agent
-cargo test                                   # protocole, session (loopback), Media Foundation
+cargo test                                    # protocole, session (loopback), mémoire partagée, config
 cargo run --release --bin wcl-mkh264 -- test.wclc --size 1280x720 --seconds 6
-cargo run --release --bin wcl-fakephone -- test.wclc          # écoute sur 127.0.0.1:5321
-cargo run --release --bin wcl-view -- --tcp 127.0.0.1:5321    # aperçu (ajouter --no-window pour les mesures)
+cargo run --release --bin wcl-fakephone -- test.wclc          # faux iPhone, TCP 127.0.0.1:5321
+cargo run --release --bin wcl-view -- --tcp 127.0.0.1:5321    # aperçu (--no-window pour les mesures)
 ```
 
 Avec un iPhone branché (app lancée, écran allumé) : `wcl-view` sans `--tcp` passe par usbmuxd.
 
-## Build & installation (P0)
+## Structure du dépôt
 
-1. Pousser un tag `v0.1.0` (ou lancer le workflow `build-ipa` manuellement) → l'IPA non signée est
-   disponible en artefact de workflow / release.
-2. Sur le PC : AltServer (tray) + iPhone branché → menu AltServer → « Install .ipa » avec ton Apple ID
-   gratuit.
-3. L'app s'installe, expire après 7 jours ; le refresh se fait via AltStore (+ AltServer en fond).
+```
+ios/                     app iOS (SwiftUI, XcodeGen ; compilée par la CI macOS, sans Mac local)
+pc/agent/                agent et outils PC (Rust)
+  src/config.rs            lecture/écriture de config.ini (partagée avec la DLL)
+  src/bin/wcl-agent        démon : session iPhone + décodage + mémoire partagée
+  src/bin/wcl-tray         icône de notification + fenêtre de réglages
+  src/bin/wcl-view         client complet (aperçu + stats)
+  src/bin/wcl-probe        sonde du tunnel USB
+  src/bin/wcl-mkh264       génère un clip H.264 de test (Media Foundation)
+  src/bin/wcl-fakephone    rejoue ce clip comme un faux iPhone
+  assets/                  logo + webcamlink.ico (embarqué dans les exécutables)
+pc/vcam/                 DLL caméra virtuelle (C++/WRL, Frame Server) + outil d'enregistrement
+pc/installer/            MSI WiX : agent + DLL + enregistrement + autostart — P5
+pc/tools/                sonde usbmux Python
+docs/                    protocole WCLN + contrat de mémoire partagée
+altstore/                source AltStore (source.json)
+.github/workflows/       CI : IPA non signée sur runner macOS
+```
 
-> Note distribution : tant que le repo est privé, les URL GitHub ne sont pas accessibles depuis
-> l'iPhone. P5 tranchera entre un repo public de distribution (IPA + source.json uniquement) ou une
-> installation manuelle via AltServer.
+## État du projet
 
-## Contraintes iOS (importantes)
+- **P0 — validé sur iPhone réel** : tunnel USB usbmuxd et protocole WCLN (`wcl-probe`), IPA non signée
+  buildée par la CI, installation Sideloadly/AltStore.
+- **P1 — validé sur iPhone réel** : vidéo de bout en bout 1080p30 (VideoToolbox low-latency, décodage
+  Media Foundation). Mesures : ~20 Mbit/s, décodage 12,4 ms + rendu 7 ms (≈19 ms de pipeline).
+  Correctif 0.1.1 : le listener est recréé quand l'app revient au premier plan.
+- **P2 — opérationnel** : caméra virtuelle (Frame Server), mémoire partagée, agent à la demande,
+  icône de notification, réglages partagés, démarrage automatique.
+- **P3 / P5 — à venir** : contrôles d'image (zoom, exposition, mise au point) et MSI WiX (installation,
+  enregistrement, autostart).
+
+## Contraintes iOS
 
 - La caméra ne fonctionne que si l'app est **au premier plan** ; écran verrouillé = capture impossible.
 - Le PC ne peut ni déverrouiller l'iPhone ni mettre l'app au premier plan (aucune API).
@@ -118,3 +216,14 @@ Avec un iPhone branché (app lancée, écran allumé) : `wcl-view` sans `--tcp` 
   automatiquement.
 - Alerte de secours : si l'app est en arrière-plan (gardée vivante), une notification locale + son
   prévient quand le PC demande la caméra.
+
+## Distribution de l'app iOS
+
+1. Pousser un tag `v0.1.x` (ou lancer le workflow `build-ipa`) → l'IPA non signée est disponible en
+   artefact de workflow / release.
+2. Sur le PC : AltServer + iPhone branché → « Install .ipa » avec un Apple ID gratuit (ou Sideloadly).
+3. L'app expire après 7 jours ; le rafraîchissement se fait via AltStore (AltServer en fond).
+
+> Note distribution : tant que le repo est privé, les URL GitHub ne sont pas accessibles depuis
+> l'iPhone. P5 tranchera entre un repo public de distribution (IPA + source.json uniquement) ou une
+> installation manuelle.
