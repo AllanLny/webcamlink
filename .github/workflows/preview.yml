@@ -1,0 +1,80 @@
+name: preview
+
+# Aperçu de l'app iOS sans Mac : compilation pour le simulateur, lancement, et
+# captures d'écran (clair et sombre) publiées en artefacts du run.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "ios/**"
+      - ".github/workflows/preview.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: preview-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  screenshot:
+    name: Captures du simulateur
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Installer XcodeGen
+        run: brew install xcodegen
+
+      - name: Générer le projet Xcode
+        working-directory: ios
+        run: xcodegen generate
+
+      - name: Démarrer un iPhone simulé
+        id: device
+        run: |
+          udid=$(xcrun simctl list -j devices available | jq -r '[.devices[][] | select(.name | startswith("iPhone"))][0].udid')
+          if [ -z "$udid" ] || [ "$udid" = "null" ]; then
+            echo "Aucun iPhone simulé disponible" >&2
+            exit 1
+          fi
+          echo "Simulateur choisi : $udid"
+          xcrun simctl bootstatus "$udid" -b
+          xcrun simctl status_bar "$udid" override --time "9:41" --batteryState charged --batteryLevel 100
+          echo "udid=$udid" >> "$GITHUB_OUTPUT"
+
+      - name: Compiler l'app pour le simulateur
+        working-directory: ios
+        run: |
+          xcodebuild \
+            -project WebcamLink.xcodeproj \
+            -scheme WebcamLink \
+            -configuration Debug \
+            -destination "id=${{ steps.device.outputs.udid }}" \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: Lancer l'app et capturer l'écran
+        working-directory: ios
+        run: |
+          device="${{ steps.device.outputs.udid }}"
+          app="build/Build/Products/Debug-iphonesimulator/WebcamLink.app"
+          # -preview : l'app saute les demandes d'autorisation, la capture
+          # montre l'interface et non une boîte de dialogue.
+          xcrun simctl privacy "$device" grant camera com.allan.webcamlink || true
+          xcrun simctl install "$device" "$app"
+          xcrun simctl launch "$device" com.allan.webcamlink -preview
+          sleep 5
+          xcrun simctl io "$device" screenshot apercu-clair.png
+          xcrun simctl ui "$device" appearance dark
+          sleep 3
+          xcrun simctl io "$device" screenshot apercu-sombre.png
+          ls -l apercu-*.png
+
+      - name: Publier les captures
+        uses: actions/upload-artifact@v4
+        with:
+          name: apercu-ios
+          path: ios/apercu-*.png
+          if-no-files-found: error
