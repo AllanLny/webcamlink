@@ -22,7 +22,19 @@ namespace {
 
 class CameraActivate : public RuntimeClass<RuntimeClassFlags<ClassicCom>, IMFActivate> {
 public:
-    CameraActivate() { MFCreateAttributes(&store_, 4); }
+    CameraActivate() {
+        MFCreateAttributes(&store_, 8);
+        // The Frame Server reads the associated-camera keys before anything
+        // else and gives up with MF_E_ATTRIBUTENOTFOUND when they are missing.
+        IMFCollection* empty = nullptr;
+        if (SUCCEEDED(MFCreateCollection(&empty)) && empty) {
+            store_->SetUnknown(wcl::kAssociatedCameraSources, empty);
+            empty->Release();
+        }
+        store_->SetUINT32(wcl::kProvideAssociatedCameraSources, TRUE);
+        store_->SetUINT32(wcl::kEnableMsCameraEffects, FALSE);
+        store_->SetString(MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME, L"WebcamLink");
+    }
 
     // IMFActivate
     STDMETHODIMP ActivateObject(REFIID riid, void** object) override {

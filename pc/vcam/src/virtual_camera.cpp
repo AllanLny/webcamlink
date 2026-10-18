@@ -150,6 +150,10 @@ public:
             found = static_cast<IMFSampleAllocatorControl*>(this);
         } else if (IsEqualIID(riid, __uuidof(IMFGetService))) {
             found = static_cast<IMFGetService*>(this);
+        } else if (IsEqualIID(riid, __uuidof(IMFCollection)) && collection_) {
+            swprintf_s(line, L"source::QueryInterface(%s) -> OK (collection)", guid);
+            wcl::LogLine(line);
+            return collection_.CopyTo(reinterpret_cast<IMFCollection**>(object));
         }
 
         if (!found) {
@@ -173,6 +177,15 @@ public:
         }
         source_attributes_->SetString(MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME, L"WebcamLink");
         source_attributes_->SetUINT32(MF_SA_D3D_AWARE, 0);
+
+        // Empty associated-camera list: the Frame Server asks for it (as an
+        // IMFCollection) even for a camera with no physical sensor behind it.
+        ComPtr<IMFCollection> collection;
+        if (SUCCEEDED(MFCreateCollection(&collection)) && collection) {
+            source_attributes_->SetUnknown(wcl::kAssociatedCameraSources, collection.Get());
+            source_attributes_->SetUINT32(wcl::kProvideAssociatedCameraSources, TRUE);
+            collection_ = collection;
+        }
 
         // One NV12 video stream, 1920x1080 @ 30 fps.
         ComPtr<IMFMediaType> type;
@@ -367,6 +380,7 @@ private:
     ComPtr<IMFPresentationDescriptor> presentation_descriptor_;
     ComPtr<IMFMediaEventQueue> events_;
     ComPtr<IMFAttributes> source_attributes_;
+    ComPtr<IMFCollection> collection_;
     ComPtr<CameraStream> camera_stream_;
     wcl::ShmReader shm_;
     MF_STREAM_STATE state_ = MF_STREAM_STATE_STOPPED;
