@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Dépannage (README)
+    url: https://github.com/AllanLny/webcamlink#dépannage
+    about: "Caméra absente, dégradé sombre, format refusé, DLL périmée : à lire avant d'ouvrir une issue."
+  - name: Signaler une vulnérabilité
+    url: https://github.com/AllanLny/webcamlink/security/advisories/new
+    about: En privé, via un avis de sécurité GitHub (pas d'issue publique).

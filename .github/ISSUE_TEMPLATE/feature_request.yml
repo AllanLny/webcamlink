@@ -1,0 +1,35 @@
+name: Idée / fonctionnalité
+description: Proposer une amélioration ou une nouvelle fonctionnalité
+title: "[Idée] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: need
+    attributes:
+      label: Besoin
+      description: Quel problème veux-tu résoudre ? (décris la situation, pas seulement la solution)
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposition
+      description: Comment imagines-tu la chose ? (interface, réglage, comportement)
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives envisagées
+      description: Y a-t-il un contournement aujourd'hui (autre app, autre réglage) ?
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Vérifications
+      options:
+        - label: J'ai lu le README et le journal des versions récentes
+          required: true
+        - label: Cette idée n'est pas déjà proposée dans les issues
+          required: true
+        - label: Je suis prêt à proposer une PR si le principe est validé
+          required: false

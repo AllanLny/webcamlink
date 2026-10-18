@@ -1,0 +1,71 @@
+name: Rapport de bug
+description: Quelque chose ne fonctionne pas (caméra absente, image figée, plantage…)
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Merci ! Avant d'ouvrir ce rapport, jette un œil au
+        [Dépannage](https://github.com/AllanLny/webcamlink#dépannage) du README : les cas les plus
+        fréquents (caméra non enregistrée, dégradé sombre, DLL périmée) y sont déjà traités.
+  - type: dropdown
+    id: zone
+    attributes:
+      label: Zone concernée
+      options:
+        - Caméra virtuelle (Windows)
+        - Agent / connexion iPhone
+        - App iOS
+        - Réglages / icône de notification
+        - Autre
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Comportement attendu
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Comportement observé
+      description: Message d'erreur exact (code HRESULT si tu l'as), capture d'écran ou courte vidéo.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Étapes pour reproduire
+      placeholder: |
+        1. Lancer …
+        2. Ouvrir la caméra dans …
+        3. …
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows
+      placeholder: Windows 11 23H2 (build 22631.xxxx), x64
+    validations:
+      required: true
+  - type: input
+    id: iphone
+    attributes:
+      label: iPhone
+      placeholder: iPhone 11, iOS 18.x — précise si tu utilises la chaîne offline (fakephone)
+  - type: input
+    id: client
+    attributes:
+      label: Application cliente
+      placeholder: App Caméra / Teams / OBS — et la résolution choisie dans les réglages
+  - type: textarea
+    id: logs
+    attributes:
+      label: Journal
+      description: Colle les dernières lignes de `%ProgramData%\WebcamLink\vcam.log` (horodatage + PID).
+      render: text
+    validations:
+      required: false
