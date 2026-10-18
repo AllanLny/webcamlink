@@ -62,9 +62,17 @@ altstore/             Source AltStore (source.json)
   l'agent, qui les détecte en réessayant `OpenFileMapping`.
 - `wcl-agent` : attend la caméra virtuelle, lance la session iPhone à l'ouverture, envoie `Stop`
   2 s après la fermeture, retente chaque seconde en cas d'échec.
-- `wcl-vcam.dll` : source média `IMFMediaSourceEx` (1 flux NV12 1920x1080@30, image de remplacement
-  quand l'iPhone ne streame pas), enregistrée via `MFCreateVirtualCamera`
+- `wcl-vcam.dll` : source média `IMFMediaSourceEx` (1 flux NV12, image de remplacement quand
+  l'iPhone ne streame pas), enregistrée via `MFCreateVirtualCamera`
   (`mfsensorgroup.dll`, catégorie `KSCATEGORY_VIDEO_CAMERA`) par `wcl-vcam-register.exe` (admin).
+- `wcl-tray.exe` : icône de notification — réglages (résolution, images/s, débit, caméra iPhone
+  avant/arrière/ultra grand-angle, miroir), démarrage/arrêt de l'agent, ouverture du journal,
+  « Démarrer avec Windows » (agent + icône au login).
+- Réglages partagés : `%ProgramData%\WebcamLink\config.ini`. La DLL le lit à l'enregistrement : la
+  résolution et les images/s s'appliquent **au prochain démarrage de Windows** ; l'agent le relit à
+  chaque ouverture de la caméra (caméra, débit, miroir immédiats).
+- Journal unique : `%ProgramData%\WebcamLink\vcam.log` (lignes horodatées + PID, lisible depuis la
+  session utilisateur alors que le Frame Server tourne en session 0).
 
 ```powershell
 # Compilation (VS Build Tools 2022 + CMake)
@@ -74,6 +82,8 @@ cmake --build pc/vcam/build --config Release
 pc\vcam\build\bin\Release\wcl-vcam-register.exe
 # Agent : attend que la caméra soit ouverte par une application
 pc\agent\target\release\wcl-agent.exe
+# Icône de notification (réglages, contrôle de l'agent, démarrage auto)
+pc\agent\target\release\wcl-tray.exe
 ```
 
 ## Développement sans iPhone
