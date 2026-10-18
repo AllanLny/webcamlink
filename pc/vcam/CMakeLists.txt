@@ -5,6 +5,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 add_library(wcl-vcam SHARED
+    src/camera_activate.cpp
     src/dllmain.cpp
     src/shm_reader.cpp
     src/virtual_camera.cpp

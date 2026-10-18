@@ -70,13 +70,13 @@ public:
 
         EnsureMediaFoundation();
 
-        ComPtr<IUnknown> source;
-        HRESULT hr = wcl::CreateVirtualCamera(&source);
+        ComPtr<IUnknown> activate;
+        HRESULT hr = wcl::CreateCameraActivate(&activate);
         if (FAILED(hr)) {
-            Log(L"CreateVirtualCamera a échoué");
+            Log(L"CreateCameraActivate a échoué");
             return hr;
         }
-        hr = source->QueryInterface(riid, object);
+        hr = activate->QueryInterface(riid, object);
         swprintf_s(line, L"CreateInstance(riid=%s) -> 0x%08lX", guid,
                    static_cast<unsigned long>(hr));
         Log(line);
