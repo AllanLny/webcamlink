@@ -13,8 +13,12 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use wcl_agent::clip::{ClipFrame, ClipReader};
 use wcl_agent::protocol::{
-    encode_heartbeat, Caps, Camera, CameraFormat, Frame, FrameDecoder, Hello, MessageType,
-    ProtocolError, SetFormat, Status, VideoConfig, FRAME_FLAG_KEYFRAME, LENS_WIDE, POSITION_BACK,
+    encode_heartbeat, Caps, Camera, CameraFormat, Frame, FrameDecoder, Hello, ImageCaps,
+    MessageType, ProtocolError, SetFormat, SetImage, Status, VideoConfig, FRAME_FLAG_KEYFRAME,
+    IMAGE_CAPS_EXPOSURE_DURATION, IMAGE_CAPS_FOCUS_DISTANCE, IMAGE_CAPS_FOCUS_POINT,
+    IMAGE_CAPS_ISO, IMAGE_CAPS_STABILIZATION, IMAGE_CAPS_TORCH, IMAGE_CAPS_TORCH_LEVEL,
+    IMAGE_CAPS_WHITE_BALANCE, IMAGE_CAPS_ZOOM, LENS_WIDE, POSITION_BACK, STABILIZATION_CINEMATIC,
+    STABILIZATION_OFF, STABILIZATION_STANDARD,
 };
 
 struct Device {
@@ -22,6 +26,33 @@ struct Device {
     config: VideoConfig,
     frames: Vec<ClipFrame>,
     fps: u32,
+}
+
+/// The pro controls the fake device claims: enough for the whole PC chain
+/// (agent, caps file, image settings window) to be exercised without an iPhone.
+/// HDR is deliberately left out so the "unsupported" path stays reachable.
+fn fake_image_caps() -> ImageCaps {
+    ImageCaps {
+        flags: IMAGE_CAPS_TORCH
+            | IMAGE_CAPS_TORCH_LEVEL
+            | IMAGE_CAPS_ZOOM
+            | IMAGE_CAPS_ISO
+            | IMAGE_CAPS_EXPOSURE_DURATION
+            | IMAGE_CAPS_WHITE_BALANCE
+            | IMAGE_CAPS_FOCUS_POINT
+            | IMAGE_CAPS_FOCUS_DISTANCE
+            | IMAGE_CAPS_STABILIZATION,
+        zoom_max_x100: 800,
+        iso_min: 25,
+        iso_max: 3200,
+        exposure_min_us: 25,
+        exposure_max_us: 1_000_000,
+        wb_min_k: 2000,
+        wb_max_k: 9000,
+        wb_tint_min_x100: -150,
+        wb_tint_max_x100: 150,
+        stabilization_modes: STABILIZATION_OFF | STABILIZATION_STANDARD | STABILIZATION_CINEMATIC,
+    }
 }
 
 fn main() -> Result<()> {
@@ -143,11 +174,13 @@ fn serve(device: &Device, stream: &mut TcpStream) -> Result<()> {
                                 };
                                 send(stream, MessageType::Hello, reply.encode())?;
                                 send(stream, MessageType::Caps, device.header_caps.encode())?;
+                                send(stream, MessageType::ImageCaps, fake_image_caps().encode())?;
                             }
                         }
                         MessageType::SetCamera => {
                             let camera_id = frame.payload.first().copied().unwrap_or(0);
                             log::info!("SetCamera({camera_id})");
+                            send(stream, MessageType::ImageCaps, fake_image_caps().encode())?;
                         }
                         MessageType::SetFormat => {
                             let requested = SetFormat::decode(&frame.payload)?;
@@ -179,7 +212,30 @@ fn serve(device: &Device, stream: &mut TcpStream) -> Result<()> {
                             }
                         }
                         MessageType::SetOptions => log::info!("SetOptions"),
-                        MessageType::SetImage => log::info!("SetImage ({} octets)", frame.payload.len()),
+                        MessageType::SetImage => {
+                            let image = SetImage::default().decode_into(&frame.payload)?;
+                            log::info!(
+                                "SetImage: zoom {}.{:02}× · expo mode {} biais {} · ISO {} · {} µs · \
+                                 focus mode {} ({}, {}) · WB mode {} {} K teinte {} · torche {} {} % · \
+                                 stab {} · HDR {}",
+                                image.zoom_x100 / 100,
+                                image.zoom_x100 % 100,
+                                image.exposure_mode,
+                                image.exposure_bias_ev_x100,
+                                image.iso,
+                                image.exposure_duration_us,
+                                image.focus_mode,
+                                image.focus_x_x10000,
+                                image.focus_y_x10000,
+                                image.wb_mode,
+                                image.wb_temp_k,
+                                image.wb_tint_x100,
+                                image.torch,
+                                image.torch_level,
+                                image.stabilization,
+                                image.hdr
+                            );
+                        }
                         MessageType::RequestKeyframe => {
                             // The clip already carries an IDR every couple of
                             // seconds; nothing to do beyond logging.

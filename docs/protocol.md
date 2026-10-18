@@ -28,6 +28,7 @@ invalide (magic/version/length) ferme la connexion.
 |-----:|------------------|--------------|------|
 | 0x01 | `Hello`          | ↔            | identification, plage de versions |
 | 0x02 | `Caps`           | device → PC  | objectifs + formats supportés |
+| 0x03 | `ImageCaps`      | device → PC  | plages des réglages d'image de la caméra choisie |
 | 0x10 | `SetCamera`      | PC → device  | choix de l'objectif |
 | 0x11 | `SetFormat`      | PC → device  | résolution, fps, codec, bitrate |
 | 0x12 | `Start`          | PC → device  | démarrage du flux |
@@ -70,6 +71,26 @@ Les deux côtés envoient `Hello` juste après la connexion.
 
 Formats dédupliqués par (largeur, hauteur) avec le fps max ; uniquement des formats vidéo de capture.
 
+### 0x03 ImageCaps
+
+Envoyé après `Hello`, puis de nouveau après chaque `SetCamera` : ces plages décrivent la caméra
+sélectionnée — et, pour l'ISO et la durée d'exposition, le format actif — pas l'appareil entier.
+
+| Champ | Type | Notes |
+|-------|------|-------|
+| `flags` | u16 | bit0 torche, bit1 niveau de torche, bit2 zoom, bit3 ISO manuel, bit4 durée manuelle, bit5 balance manuelle, bit6 point de focus, bit7 distance de focus, bit8 stabilisation, bit9 HDR |
+| `zoom_max_x100` | u16 | 100 = 1.0× |
+| `iso_min` / `iso_max` | u16 | plage la plus large des formats ; le device re-borne à l'application |
+| `exposure_min_us` / `exposure_max_us` | u32 | idem |
+| `wb_min_k` / `wb_max_k` | u16 | 0/0 si indisponible |
+| `wb_tint_min_x100` / `wb_tint_max_x100` | i16 | ×100, teinte signée |
+| `stabilization_modes` | u8 | bit0 off, bit1 standard, bit2 cinématique |
+
+Un champ absent prend sa valeur par défaut : un device qui n'envoie pas ce message (ou seulement son
+début) reste utilisable, simplement sans réglages pro annoncés. Les valeurs annoncées sont les plus
+larges possibles ; le device borne de nouveau au moment d'appliquer, donc une valeur demandée peut être
+ajustée.
+
 ### 0x10 SetCamera
 
 `camera_id` u8.
@@ -102,18 +123,25 @@ Payload vide.
 |-------|------|-------|
 | `zoom` | u16 | ×100 (100 = 1.0×) |
 | `exposure_mode` | u8 | 0 = auto, 1 = bias, 2 = manuel |
-| `exposure_bias_ev` | i16 | ×100 |
-| `iso` | u16 | manuel |
-| `exposure_duration_us` | u32 | manuel |
-| `focus_mode` | u8 | 0 = continu, 1 = verrouillé, 2 = point+verrou |
-| `focus_x` / `focus_y` | u16 | ×10000, point normalisé |
+| `exposure_bias_ev` | i16 | ×100, utilisé en mode 1 |
+| `iso` | u16 | mode 2 |
+| `exposure_duration_us` | u32 | mode 2 ; envoyé **avec** `iso`, jamais seul |
+| `focus_mode` | u8 | 0 = continu, 1 = verrouillé (distance), 2 = point+verrou |
+| `focus_x` / `focus_y` | u16 | ×10000, point normalisé (modes 0 et 2) |
 | `wb_mode` | u8 | 0 = auto, 1 = verrouillé, 2 = manuel |
-| `wb_temp` / `wb_tint` | u16 | Kelvin / ×100 |
+| `wb_temp` | u16 | Kelvin, mode 2 |
+| `wb_tint` | i16 | ×100, signé, mode 2 |
 | `torch` | u8 | 0 = off, 1 = on |
-| `stabilization` | u8 | 0 = off, 1 = standard |
+| `stabilization` | u8 | 0 = off, 1 = standard, 2 = cinématique |
 | `hdr` | u8 | 0 = off, 1 = on |
+| `torch_level` | u8 | 0-100 (%), utile quand `torch` = 1 |
+| `focus_distance_x100` | u16 | 0 = proche, 100 = infini, mode 1 |
 
-Un champ absent est laissé inchangé ; une valeur inconnue est ignorée.
+Un champ absent est laissé inchangé ; une valeur inconnue est ignorée. Comme l'absence signifie
+« inchangé », **revenir à l'automatique doit envoyer explicitement les valeurs par défaut** (par
+exemple `exposure_mode` = 0) : un payload tronqué ne remet jamais un réglage à zéro. Un réglage non
+supporté par la caméra choisie (voir `ImageCaps`) provoque une erreur `IMAGE_UNSUPPORTED` ; le flux
+continue.
 
 ### 0x20 VideoConfig
 
@@ -165,6 +193,7 @@ pendant 3 s = connexion morte.
 | 5 | `ENCODER_FAILURE` |
 | 6 | `THERMAL_SHUTDOWN` |
 | 7 | `NOT_IN_FOREGROUND` |
+| 8 | `IMAGE_UNSUPPORTED` (mode ou valeur que la caméra ne sait pas faire) |
 
 ## Session type
 
