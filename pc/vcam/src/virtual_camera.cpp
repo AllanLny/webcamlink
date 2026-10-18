@@ -116,7 +116,9 @@ private:
 };
 
 /// The virtual camera media source.
-class VirtualCameraSource : public RuntimeClass<RuntimeClassFlags<ClassicCom>, IMFMediaSourceEx> {
+class VirtualCameraSource
+    : public RuntimeClass<RuntimeClassFlags<ClassicCom>, IMFMediaSourceEx,
+                          IMFSampleAllocatorControl> {
 public:
     friend class CameraStream;
 
@@ -271,6 +273,28 @@ public:
         return camera_stream_->StreamAttributes()->QueryInterface(IID_PPV_ARGS(attributes));
     }
     STDMETHODIMP SetD3DManager(IUnknown* manager) override { return S_OK; }
+
+    // IMFSampleAllocatorControl — required by the Frame Server for virtual
+    // cameras. We always deliver our own samples built from shared memory.
+    STDMETHODIMP SetDefaultAllocator(DWORD stream_id, IUnknown* allocator) override {
+        if (stream_id != 0) {
+            return MF_E_INVALIDSTREAMNUMBER;
+        }
+        return S_OK;
+    }
+    STDMETHODIMP GetAllocatorUsage(DWORD stream_id, DWORD* input_id,
+                                   MFSampleAllocatorUsage* usage) override {
+        if (stream_id != 0) {
+            return MF_E_INVALIDSTREAMNUMBER;
+        }
+        if (input_id) {
+            *input_id = 0;
+        }
+        if (usage) {
+            *usage = MFSampleAllocatorUsage_UsesCustomAllocator;
+        }
+        return S_OK;
+    }
 
     wcl::ShmReader* Shm() { return &shm_; }
     MF_STREAM_STATE State() { return state_; }
