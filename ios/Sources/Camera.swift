@@ -350,10 +350,7 @@ final class CameraController: NSObject, AVCaptureVideoDataOutputSampleBufferDele
         // Torch: graded when the device takes a level, plain otherwise.
         if device.hasTorch, device.isTorchAvailable, device.isTorchModeSupported(.on) {
             if image.torch {
-                let level = max(
-                    Double(device.minAvailableTorchLevel),
-                    min(Double(image.torchLevel) / 100.0, 1.0)
-                )
+                let level = min(max(Double(image.torchLevel) / 100.0, 0.05), 1.0)
                 try? device.setTorchModeOn(level: Float(level))
             } else {
                 device.torchMode = .off
@@ -461,15 +458,18 @@ final class CameraController: NSObject, AVCaptureVideoDataOutputSampleBufferDele
             device.focusMode = .continuousAutoFocus
         }
 
-        // Stabilisation, when the format offers the requested mode.
+        // Stabilisation, when the format offers the requested mode. It is a
+        // property of the video connection, not of the device.
         let stabilization: AVCaptureVideoStabilizationMode
         switch image.stabilization {
         case WclStabilization.standard: stabilization = .standard
         case WclStabilization.cinematic: stabilization = .cinematic
         default: stabilization = .off
         }
-        if device.activeFormat.isVideoStabilizationModeSupported(stabilization) {
-            device.activeVideoStabilizationMode = stabilization
+        if device.activeFormat.isVideoStabilizationModeSupported(stabilization),
+           let connection = output.connection(with: .video),
+           connection.isVideoStabilizationSupported {
+            connection.preferredVideoStabilizationMode = stabilization
         }
     }
 
