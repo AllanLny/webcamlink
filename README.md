@@ -26,32 +26,34 @@ altstore/             Source AltStore (source.json)
 
 ## État du projet
 
-**P0 — tunnel USB validé côté transport, distribution bouclée** :
+**P0 — terminé et validé sur iPhone réel** :
 
-1. Tunnel USB : le PC joint le listener de l'app via usbmuxd. `wcl-probe list` voit l'iPhone et
-   `Connect` réussit (0 pour un port qui écoute, 3 sinon) ; le test applicatif final est
-   `wcl-probe wcl-hello 5321` avec l'app lancée. Le mode `lockdown` ne sert plus que de diagnostic :
-   les iOS récents exigent TLS avant toute requête lockdownd.
-2. Distribution : IPA non signée buildée par GitHub Actions (workflow `build-ipa`), installée via
-   AltStore/AltServer.
+1. Tunnel USB : `wcl-probe wcl-hello 5321` reçoit le `Hello` de l'app et l'écho du `Heartbeat`
+   (« TUNNEL USB OK — round-trip WCLN complet validé »). Le mode `lockdown` ne sert plus que de
+   diagnostic : les iOS récents exigent TLS avant toute requête lockdownd.
+2. Distribution : IPA non signée buildée par GitHub Actions (workflow `build-ipa`), installée avec
+   **Sideloadly** (signature avec un Apple ID gratuit ; l'app est réenrôlée pour l'auto-refresh).
+   Sideloadly mange le bundle ID (`com.allan.webcamlink.L5APTZGU7R`, `ALTBundleIdentifier` = l'original).
 
 > Côté PC, le pilote Apple (Apple Mobile Device USB Device) est indispensable : sans lui l'iPhone
-> s'attache au pilote WPD de Windows et usbmuxd ne voit rien.
+> s'attache au pilote WPD de Windows et usbmuxd ne voit rien. Sideloadly a aussi besoin d'**Apple
+> Application Support** (`winget install Apple.AppleApplicationSupport.x64`) et refuse les IP
+> bloquées par Apple pour GSA (503) — un partage de connexion iPhone contourne le blocage.
 
-**P1 — vidéo de bout en bout** :
+**P1 — vidéo de bout en bout, validée sur iPhone réel (1920x1080 @ 30 fps)** :
 
-- Côté PC : terminé et validé hors iPhone. `wcl-view` négocie la session
-  (Hello/Caps/SetCamera/SetFormat/Start), décode le H.264 (Media Foundation MFT,
-  `CODECAPI_AVLowLatencyMode`) et affiche l'aperçu + les stats. Chaîne validée de bout en bout
-  avec `wcl-mkh264` → `wcl-fakephone` → `wcl-view` en 1280x720@30, ~8 Mbit/s, décodage ~3 ms/frame,
-  chaque frame décodée correspondant exactement à sa source (tests `tests/mf_pipeline.rs`).
-- Côté iOS : écrit (capture AVCaptureSession, encodage VideoToolbox low-latency sans B-frames,
-  `Caps` complet, `SetCamera`/`SetFormat`/`SetOptions`/`SetImage`/`Start`/`Stop`/`RequestKeyframe`,
-  `VideoConfig` + `VideoFrame` + `Status` + backpressure) — **reste à compiler via la CI macOS**
-  puis à tester sur iPhone réel.
+- iOS : capture AVCaptureSession, encodage VideoToolbox low-latency sans B-frames, `Caps` complet,
+  `SetCamera`/`SetFormat`/`SetOptions`/`Start`/`Stop`/`RequestKeyframe`, `VideoConfig` +
+  `VideoFrame` + `Status`, backpressure.
+- PC : `wcl-view` négocie la session, décode le H.264 (Media Foundation, `CODECAPI_AVLowLatencyMode`)
+  et affiche l'aperçu + les stats.
+- Mesures réelles : **~20 Mbit/s**, décodage **12,4 ms** + rendu **7 ms** (≈19 ms de pipeline).
+  La chaîne offline (`wcl-mkh264` → `wcl-fakephone` → `wcl-view`) reste la base des tests sans iPhone.
+- Limite connue : le listener de l'app **meurt quand iOS la suspend** (arrière-plan/écran verrouillé)
+  et n'est pas encore relancé au retour au premier plan — relancer l'app suffit en attendant (P4).
 
-Prochaines étapes côté toi : `gh auth login` (pour pousser le repo privé et lancer la CI), brancher
-l'iPhone pour `wcl-probe lockdown`, puis installer l'IPA via AltServer.
+**Prochaine étape : P2 — webcam virtuelle** (DLL C++/WRL + Frame Server + mémoire partagée) pour que
+l'iPhone apparaisse comme une caméra système dans Teams/Zoom/OBS/Chrome.
 
 ## Développement sans iPhone
 

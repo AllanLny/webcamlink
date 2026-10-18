@@ -11,6 +11,7 @@
 use anyhow::{bail, Context, Result};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
+use wcl_agent::clip::{ClipFrame, ClipHeader, ClipWriter};
 use wcl_agent::color::{nv12_to_bgra, write_bmp};
 use wcl_agent::decode::H264Decoder;
 use wcl_agent::mf::MediaFoundation;
@@ -30,6 +31,8 @@ struct Options {
     window: bool,
     dump_frame: Option<PathBuf>,
     dump_index: u64,
+    dump_luma: Option<PathBuf>,
+    dump_clip: Option<PathBuf>,
 }
 
 fn parse_options() -> Result<Options> {
@@ -44,6 +47,8 @@ fn parse_options() -> Result<Options> {
         window: true,
         dump_frame: None,
         dump_index: 0,
+        dump_luma: None,
+        dump_clip: None,
     };
 
     let mut arguments = std::env::args().skip(1);
@@ -64,6 +69,8 @@ fn parse_options() -> Result<Options> {
             "--no-window" => options.window = false,
             "--dump-frame" => options.dump_frame = Some(PathBuf::from(arguments.next().context("--dump-frame attend un chemin")?)),
             "--dump-index" => options.dump_index = arguments.next().context("--dump-index attend un index")?.parse()?,
+            "--dump-luma" => options.dump_luma = Some(PathBuf::from(arguments.next().context("--dump-luma attend un chemin")?)),
+            "--dump-clip" => options.dump_clip = Some(PathBuf::from(arguments.next().context("--dump-clip attend un chemin")?)),
             "--help" | "-h" => {
                 println!("{}", HELP);
                 std::process::exit(0);
@@ -87,7 +94,9 @@ wcl-view — aperçu WebcamLink (P1)
   --seconds N           quitter après N secondes
   --no-window           pas d'aperçu (mesures seules)
   --dump-frame FILE.bmp enregistrer une frame décodée (voir --dump-index)
-  --dump-index N        index de la frame à enregistrer (défaut 0)";
+  --dump-index N        index de la frame à enregistrer (défaut 0)
+  --dump-luma FILE.bmp  enregistrer la luma (niveaux de gris) de cette frame
+  --dump-clip FILE.wclc enregistrer le flux reçu (clip WCLC rejouable)";
 
 /// Pick a camera + format pair from the announced caps.
 fn choose(caps: &Caps, options: &Options) -> Result<(u8, (u16, u16), u16)> {
@@ -262,6 +271,7 @@ fn main() -> Result<()> {
     };
 
     let mut decoder: Option<H264Decoder> = None;
+    let mut clip_writer: Option<ClipWriter> = None;
     let mut stats = Stats::default();
     let mut bgra = Vec::new();
     let mut last_heartbeat = Instant::now();
@@ -295,8 +305,27 @@ fn main() -> Result<()> {
                 let mut created = H264Decoder::new(false)?;
                 created.configure(u32::from(config.width), u32::from(config.height), u32::from(config.fps).max(1))?;
                 decoder = Some(created);
+
+                if let Some(path) = &options.dump_clip {
+                    let header = ClipHeader {
+                        codec: config.codec,
+                        width: config.width,
+                        height: config.height,
+                        fps: config.fps,
+                        parameter_sets: config.parameter_sets.clone(),
+                    };
+                    clip_writer = Some(ClipWriter::create(path, &header)?);
+                    println!("Flux enregistré dans {} (clip WCLC)", path.display());
+                }
             }
             Ok(Some(Event::VideoFrame(frame))) => {
+                if let Some(writer) = clip_writer.as_mut() {
+                    writer.write_frame(&ClipFrame {
+                        pts_us: frame.pts_us,
+                        flags: frame.flags,
+                        data: frame.data.clone(),
+                    })?;
+                }
                 if let Some(decoder) = decoder.as_mut() {
                     let started = Instant::now();
                     let decoded = decoder.feed(&frame.data, frame.pts_us)?;
@@ -326,15 +355,44 @@ fn main() -> Result<()> {
                         );
                         stats.convert_ms_total += convert_started.elapsed().as_secs_f64() * 1000.0;
 
-                        if let Some(path) = &options.dump_frame {
-                            if !dumped && stats.frames > options.dump_index {
-                                dumped = true;
+                        if !dumped && stats.frames > options.dump_index {
+                            dumped = true;
+                            if let Some(path) = &options.dump_frame {
                                 write_bmp(path, &bgra, decoded_frame.width, decoded_frame.height)?;
                                 println!(
                                     "Frame {} décodée écrite dans {}",
                                     stats.frames,
                                     path.display()
                                 );
+                            }
+
+                            let luma_len = (decoded_frame.width as usize)
+                                .saturating_mul(decoded_frame.height as usize)
+                                .min(decoded_frame.nv12.len());
+                            let luma = &decoded_frame.nv12[..luma_len];
+                            let minimum = luma.iter().copied().min().unwrap_or(0);
+                            let maximum = luma.iter().copied().max().unwrap_or(0);
+                            let mean = luma.iter().map(|value| f64::from(*value)).sum::<f64>()
+                                / (luma.len().max(1) as f64);
+                            println!(
+                                "NV12 {}x{} · stride_y={} stride_uv={} · {} octets · luma min={} max={} moyenne={:.1}",
+                                decoded_frame.width,
+                                decoded_frame.height,
+                                decoded_frame.stride_y,
+                                decoded_frame.stride_uv,
+                                decoded_frame.nv12.len(),
+                                minimum,
+                                maximum,
+                                mean
+                            );
+
+                            if let Some(path) = &options.dump_luma {
+                                let mut gray = Vec::with_capacity(luma_len * 4);
+                                for value in luma {
+                                    gray.extend_from_slice(&[*value, *value, *value, 255]);
+                                }
+                                write_bmp(path, &gray, decoded_frame.width, decoded_frame.height)?;
+                                println!("Luma écrite dans {}", path.display());
                             }
                         }
                         if let Some(window) = &preview {
@@ -381,6 +439,11 @@ fn main() -> Result<()> {
     let _ = session.stop();
     if stats.skipped > 0 {
         println!("{} frame(s) ignorée(s) faute de VideoConfig", stats.skipped);
+    }
+
+    if let Some(writer) = clip_writer.take() {
+        let frames = writer.finish()?;
+        println!("Clip enregistré : {frames} frame(s)");
     }
 
     match exit_error {

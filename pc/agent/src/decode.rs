@@ -114,6 +114,9 @@ impl H264Decoder {
                 break;
             };
             let subtype = unsafe { candidate.GetGUID(&MF_MT_SUBTYPE) }.unwrap_or_default();
+            let size = unsafe { candidate.GetUINT64(&MF_MT_FRAME_SIZE) }.unwrap_or(0);
+            let (width, height) = mf::unpack_size(size);
+            log::info!("sortie décodeur candidate {index}: {subtype:?} {width}x{height}");
             if subtype == MFVideoFormat_NV12 {
                 unsafe { self.transform.SetOutputType(0, &candidate, 0)? };
                 self.stream_info = unsafe { self.transform.GetOutputStreamInfo(0)? };
@@ -227,7 +230,10 @@ fn read_nv12(sample: &IMFSample, width: u32, height: u32) -> Result<DecodedFrame
     let mut nv12 = vec![0u8; width * height * 3 / 2];
     let buffer = unsafe { sample.ConvertToContiguousBuffer() }.context("ConvertToContiguousBuffer")?;
 
-    let (stride_y, stride_uv) = if let Ok(buffer2d) = buffer.cast::<IMF2DBuffer>() {
+    // `copy_nv12` strips the source padding: the resulting buffer is compact,
+    // so the reported strides are always the width (returning the decoder's
+    // pitch here shifts every row when the pitch is aligned above the width).
+    if let Ok(buffer2d) = buffer.cast::<IMF2DBuffer>() {
         let mut scanline = std::ptr::null_mut();
         let mut pitch = 0i32;
         unsafe {
@@ -235,8 +241,6 @@ fn read_nv12(sample: &IMFSample, width: u32, height: u32) -> Result<DecodedFrame
             copy_nv12(scanline, pitch.max(0) as usize, width, height, &mut nv12);
             buffer2d.Unlock2D()?;
         }
-        let pitch = pitch.max(0) as usize;
-        (pitch, pitch)
     } else {
         let mut pointer = std::ptr::null_mut();
         let mut current = 0u32;
@@ -245,10 +249,16 @@ fn read_nv12(sample: &IMFSample, width: u32, height: u32) -> Result<DecodedFrame
             copy_nv12(pointer, width, width, height, &mut nv12);
             buffer.Unlock()?;
         }
-        (width, width)
-    };
+    }
 
-    Ok(DecodedFrame { nv12, stride_y, stride_uv, width: width as u32, height: height as u32, pts_us: None })
+    Ok(DecodedFrame {
+        nv12,
+        stride_y: width,
+        stride_uv: width,
+        width: width as u32,
+        height: height as u32,
+        pts_us: None,
+    })
 }
 
 /// Copy NV12 (Y plane then interleaved UV plane) stripping row padding.
