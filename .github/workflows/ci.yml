@@ -1,0 +1,63 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pc:
+    name: Agent et caméra virtuelle (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: pc/agent
+
+      - name: Tests de l'agent
+        working-directory: pc/agent
+        run: cargo test --release --locked
+
+      - name: Compilation de la caméra virtuelle
+        run: |
+          cmake -S pc/vcam -B pc/vcam/build -G "Visual Studio 17 2022" -A x64
+          cmake --build pc/vcam/build --config Release
+
+  ios:
+    name: App iOS (compilation non signée)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Installer XcodeGen
+        run: brew install xcodegen
+
+      - name: Générer le projet Xcode
+        working-directory: ios
+        run: xcodegen generate
+
+      - name: Compiler l'app
+        working-directory: ios
+        run: |
+          xcodebuild \
+            -project WebcamLink.xcodeproj \
+            -scheme WebcamLink \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            build

@@ -4,6 +4,11 @@
 L'app iOS capture et encode en H.264 ; un agent PC décode le flux et alimente une **caméra virtuelle**
 que voient Teams, Zoom, OBS, l'app Caméra, etc.
 
+[![ci](https://github.com/AllanLny/webcamlink/actions/workflows/ci.yml/badge.svg)](https://github.com/AllanLny/webcamlink/actions/workflows/ci.yml)
+[![build-ipa](https://github.com/AllanLny/webcamlink/actions/workflows/ipa.yml/badge.svg)](https://github.com/AllanLny/webcamlink/actions/workflows/ipa.yml)
+[![Licence : MIT](https://img.shields.io/badge/licence-MIT-3B82F6.svg)](LICENSE)
+![Windows 11 x64](https://img.shields.io/badge/Windows%2011-x64-0078D6.svg)
+
 ## Sommaire
 
 - [Fonctionnement](#fonctionnement)
@@ -17,6 +22,8 @@ que voient Teams, Zoom, OBS, l'app Caméra, etc.
 - [État du projet](#état-du-projet)
 - [Contraintes iOS](#contraintes-ios)
 - [Distribution de l'app iOS](#distribution-de-lapp-ios)
+- [Contribuer](#contribuer)
+- [Licence](#licence)
 
 ## Fonctionnement
 
@@ -224,6 +231,23 @@ altstore/                source AltStore (source.json)
 2. Sur le PC : AltServer + iPhone branché → « Install .ipa » avec un Apple ID gratuit (ou Sideloadly).
 3. L'app expire après 7 jours ; le rafraîchissement se fait via AltStore (AltServer en fond).
 
-> Note distribution : tant que le repo est privé, les URL GitHub ne sont pas accessibles depuis
-> l'iPhone. P5 tranchera entre un repo public de distribution (IPA + source.json uniquement) ou une
-> installation manuelle.
+> Note distribution : le dépôt étant public, les URL de release ci-dessus sont accessibles depuis
+> l'iPhone. La source AltStore du projet (`altstore/source.json`) pointe sur l'IPA de la dernière
+> release — adapte le dépôt, les noms et le bundle ID si tu publies ta propre version.
+
+## Contribuer
+
+Les issues et les pull requests sont bienvenus. Lis d'abord [CONTRIBUTING.md](CONTRIBUTING.md) (mise en
+route, attentes d'une PR, style) et le [code de conduite](CODE_OF_CONDUCT.md).
+
+- La CI ([ci.yml](.github/workflows/ci.yml)) teste l'agent et compile la caméra virtuelle sous Windows,
+  et compile l'app iOS (non signée) à chaque PR ; [build-ipa](.github/workflows/ipa.yml) construit l'IPA
+  sur tag.
+- Le protocole WCLN ([docs/protocol.md](docs/protocol.md)) est un contrat entre l'iOS et le PC : un
+  changement de message se fait des deux côtés dans le même PR.
+- Pour une vulnérabilité, n'ouvre pas d'issue : voir [SECURITY.md](SECURITY.md).
+
+## Licence
+
+[MIT](LICENSE) — tu peux utiliser, modifier, forker et redistribuer le projet, y compris
+commercialement, à condition de conserver la mention de copyright et la licence.
