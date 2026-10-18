@@ -39,7 +39,8 @@ use windows::Win32::UI::Shell::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AdjustWindowRect, AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
-    DestroyMenu, DispatchMessageW, GetCursorPos, GetMessageW, GetSystemMetrics, HMENU, LoadCursorW,
+    DestroyMenu, DispatchMessageW, FindWindowW, GetCursorPos, GetMessageW, GetSystemMetrics, HMENU,
+    LoadCursorW,
     LoadImageW, MessageBoxW, PostMessageW, PostQuitMessage, RegisterClassW, SendMessageW,
     SetForegroundWindow, SetWindowTextW, ShowWindow, TrackPopupMenu, TranslateMessage,
     BM_GETCHECK, BM_SETCHECK, BN_CLICKED, BS_AUTOCHECKBOX, BS_DEFPUSHBUTTON, BS_PUSHBUTTON,
@@ -54,6 +55,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use wcl_agent::config::{self, CameraPreference, Settings};
 
 const WM_TRAY: u32 = WM_APP + 1;
+/// Relance (raccourci du menu Démarrer) : afficher la fenêtre de réglages.
+const WM_SHOW_SETTINGS: u32 = WM_APP + 2;
 const TRAY_ICON_ID: u32 = 1;
 
 /// `BST_CHECKED` vit dans `Win32::UI::Controls` : la valeur est répétée ici.
@@ -239,8 +242,14 @@ unsafe fn apply_font(handle: isize, font: isize) {
 fn main() -> Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
-    // Une seule icône à la fois : le mutex nommé fait office de verrou.
+    // Déjà lancé ? Le second lancement (raccourci du menu Démarrer) demande à
+    // l'instance active d'ouvrir ses réglages, puis s'arrête.
     unsafe {
+        if let Ok(existing) = FindWindowW(w!("WebcamLinkTray"), PCWSTR::null()) {
+            let _ = PostMessageW(Some(existing), WM_SHOW_SETTINGS, WPARAM(0), LPARAM(0));
+            return Ok(());
+        }
+        // Une seule icône à la fois : le mutex nommé fait office de verrou.
         let _guard = CreateMutexW(None, false, w!("Global\\WebcamLinkTray"))?;
         if GetLastError() == ERROR_ALREADY_EXISTS {
             return Ok(());
@@ -357,6 +366,14 @@ unsafe extern "system" fn tray_proc(
                     log(&format!("réglages indisponibles : {error:#}"));
                     message_box(&format!("Réglages indisponibles : {error:#}"), MB_ICONERROR);
                 }
+            }
+            LRESULT(0)
+        }
+        WM_SHOW_SETTINGS => {
+            log("relance : ouverture des réglages");
+            if let Err(error) = show_settings() {
+                log(&format!("réglages indisponibles : {error:#}"));
+                message_box(&format!("Réglages indisponibles : {error:#}"), MB_ICONERROR);
             }
             LRESULT(0)
         }
