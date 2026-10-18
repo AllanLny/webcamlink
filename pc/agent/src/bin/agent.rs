@@ -7,16 +7,18 @@
 
 use anyhow::{bail, Context, Result};
 use std::time::{Duration, Instant};
-use wcl_agent::config::{CameraPreference, Settings};
+use wcl_agent::config::{CameraCaps, CameraPreference, Settings};
 use wcl_agent::decode::H264Decoder;
 use wcl_agent::mf::MediaFoundation;
 use wcl_agent::protocol::{
-    Caps, Camera, ProtocolError, SetFormat, SetOptions, CODEC_H264, LENS_TELE, LENS_ULTRA_WIDE,
-    LENS_WIDE, POSITION_FRONT,
+    Caps, Camera, ErrorCode, ImageCaps, ProtocolError, SetFormat, SetImage, SetOptions, CODEC_H264,
+    LENS_TELE, LENS_ULTRA_WIDE, LENS_WIDE, POSITION_FRONT,
 };
 use wcl_agent::session::{Event, Session, SessionError};
 use wcl_agent::shm::{
-    Control, ShmBlock, ShmNames, PRODUCER_ERROR, PRODUCER_STOPPED, PRODUCER_STREAMING,
+    AppliedControls, Control, ControlsMapping, ShmBlock, ShmNames, CONTROLS_FLAG_AUTO_EXPOSURE,
+    CONTROLS_FLAG_AUTO_FOCUS, CONTROLS_FLAG_AUTO_WHITE_BALANCE, PRODUCER_ERROR, PRODUCER_STOPPED,
+    PRODUCER_STREAMING,
 };
 
 struct Options {
@@ -75,6 +77,7 @@ fn main() -> Result<()> {
     log::info!("wcl-agent démarré — en attente de la webcam virtuelle (mémoire partagée)");
 
     let mut shm: Option<ShmBlock> = None;
+    let mut controls: Option<ControlsMapping> = None;
     let mut session: Option<Session> = None;
     let mut decoder: Option<H264Decoder> = None;
     let mut last_tick = Instant::now();
@@ -87,6 +90,67 @@ fn main() -> Result<()> {
     loop {
         if last_tick.elapsed() >= Duration::from_millis(250) {
             last_tick = Instant::now();
+
+            // Contrôles pilotés par les applications clientes (OBS, réglages
+            // caméra de Windows) : la DLL y dépose leurs demandes. On les
+            // traduit dans config.ini, que le bloc « à chaud » plus bas envoie.
+            if controls.is_none() {
+                match ControlsMapping::open() {
+                    Ok(Some(mapping)) => {
+                        log::info!("contrôles clients disponibles (Global\\WclControls)");
+                        controls = Some(mapping);
+                    }
+                    Ok(None) => {}
+                    Err(error) => log::warn!("contrôles clients illisibles: {error:#}"),
+                }
+            }
+            if let Some(mapping) = controls.as_ref() {
+                let snapshot = mapping.snapshot();
+                if snapshot.client_generation != snapshot.applied_generation {
+                    let automatic_exposure = snapshot.flags & CONTROLS_FLAG_AUTO_EXPOSURE != 0;
+                    let automatic_balance =
+                        snapshot.flags & CONTROLS_FLAG_AUTO_WHITE_BALANCE != 0;
+                    let automatic_focus = snapshot.flags & CONTROLS_FLAG_AUTO_FOCUS != 0;
+
+                    let mut requested = Settings::load();
+                    requested.zoom_x100 = snapshot.zoom_x100.max(1);
+                    requested.exposure_mode = if automatic_exposure { 0 } else { 2 };
+                    if !automatic_exposure {
+                        if snapshot.iso > 0 {
+                            requested.iso = snapshot.iso.min(u32::from(u16::MAX)) as u16;
+                        }
+                        if snapshot.exposure_us > 0 {
+                            requested.exposure_duration_us = snapshot.exposure_us;
+                        }
+                    }
+                    requested.wb_mode = if automatic_balance { 0 } else { 2 };
+                    if !automatic_balance && snapshot.white_balance_k > 0 {
+                        requested.wb_temp_k =
+                            snapshot.white_balance_k.min(u32::from(u16::MAX)) as u16;
+                    }
+                    requested.focus_mode = if automatic_focus { 0 } else { 1 };
+                    if !automatic_focus {
+                        requested.focus_distance_x100 = snapshot.focus_x100.min(100) as u16;
+                    }
+
+                    match requested.save() {
+                        Ok(()) => log::info!(
+                            "réglages demandés par une application cliente repris dans config.ini"
+                        ),
+                        Err(error) => log::warn!("config.ini non écrit: {error}"),
+                    }
+                    mapping.publish_applied(&AppliedControls {
+                        generation: snapshot.client_generation,
+                        flags: snapshot.flags,
+                        zoom_x100: requested.zoom_x100,
+                        iso: u32::from(requested.iso),
+                        exposure_us: requested.exposure_duration_us,
+                        white_balance_k: u32::from(requested.wb_temp_k),
+                        focus_x100: u32::from(requested.focus_distance_x100),
+                        available: session.is_some(),
+                    });
+                }
+            }
 
             // Réglages : les changements s'appliquent à chaud — miroir
             // immédiat, caméra et débit par un redémarrage du flux (l'iPhone
@@ -122,6 +186,34 @@ fn main() -> Result<()> {
                     decoder = None;
                     retry_at = None;
                 }
+                if image_changed(&previous, &updated) {
+                    // Réglages de device : ils s'appliquent à chaud, sans
+                    // redémarrer la session.
+                    log::info!(
+                        "réglages image (zoom {} %, expo mode {} biais {} ISO {} durée {} µs, \
+                         focus mode {} distance {}, WB mode {} {} K teinte {}, torche {} {} %, \
+                         stabilisation {}, HDR {})",
+                        updated.zoom_x100,
+                        updated.exposure_mode,
+                        updated.exposure_bias_ev_x100,
+                        updated.iso,
+                        updated.exposure_duration_us,
+                        updated.focus_mode,
+                        updated.focus_distance_x100,
+                        updated.wb_mode,
+                        updated.wb_temp_k,
+                        updated.wb_tint_x100,
+                        updated.torch,
+                        updated.torch_level,
+                        updated.stabilization,
+                        updated.hdr,
+                    );
+                    if let Some(active) = session.as_mut() {
+                        if let Err(error) = active.set_image(image_message(&updated)) {
+                            log::warn!("SetImage non envoyé: {error}");
+                        }
+                    }
+                }
                 if updated.width != previous.width
                     || updated.height != previous.height
                     || updated.fps != previous.fps
@@ -153,17 +245,37 @@ fn main() -> Result<()> {
                         idle_since = None;
                         if session.is_none() && retry_at.is_none_or(|at| Instant::now() >= at) {
                             match start_stream(&options, &control, &settings) {
-                                Ok((mut new_session, new_decoder)) => {
+                                Ok((mut new_session, new_decoder, image_caps)) => {
                                     log::info!(
                                         "flux démarré pour la webcam (demande {}x{}@{} fps)",
                                         control.width,
                                         control.height,
                                         control.fps
                                     );
+                                    if let (Some(mapping), Some(caps)) =
+                                        (controls.as_ref(), image_caps.as_ref())
+                                    {
+                                        mapping.publish_ranges(caps);
+                                    }
                                     let _ = new_session.heartbeat();
                                     session = Some(new_session);
                                     decoder = Some(new_decoder);
                                     last_heartbeat = Instant::now();
+                                    // Les GET des clients peuvent répondre dès la
+                                    // première session.
+                                    if let Some(mapping) = controls.as_ref() {
+                                        let snapshot = mapping.snapshot();
+                                        mapping.publish_applied(&AppliedControls {
+                                            generation: snapshot.applied_generation,
+                                            flags: snapshot.flags,
+                                            zoom_x100: settings.zoom_x100,
+                                            iso: u32::from(settings.iso),
+                                            exposure_us: settings.exposure_duration_us,
+                                            white_balance_k: u32::from(settings.wb_temp_k),
+                                            focus_x100: u32::from(settings.focus_distance_x100),
+                                            available: true,
+                                        });
+                                    }
                                 }
                                 Err(error) => {
                                     log::warn!("démarrage impossible: {error:#} — nouvel essai dans 1 s");
@@ -246,11 +358,19 @@ fn main() -> Result<()> {
                 Ok(Some(Event::Status(status))) => log::debug!("status: {:?}", status),
                 Ok(Some(Event::Error(error))) => {
                     report_error(&error);
-                    if let Some(block) = shm.as_mut() {
-                        block.set_producer_state(PRODUCER_ERROR, u32::from(error.code));
+                    publish_last_error(&error.message);
+                    if error.code_label() == Some(ErrorCode::ImageUnsupported) {
+                        // Un réglage refusé par la caméra ne coupe pas le flux :
+                        // la fenêtre de réglages affiche l'erreur, le reste
+                        // continue d'être appliqué.
+                        log::warn!("réglage image refusé — flux conservé");
+                    } else {
+                        if let Some(block) = shm.as_mut() {
+                            block.set_producer_state(PRODUCER_ERROR, u32::from(error.code));
+                        }
+                        drop_session = true;
+                        retry_at = Some(Instant::now() + Duration::from_secs(1));
                     }
-                    drop_session = true;
-                    retry_at = Some(Instant::now() + Duration::from_secs(1));
                 }
                 Ok(Some(_)) => {}
                 Ok(None) => {}
@@ -283,7 +403,7 @@ fn start_stream(
     options: &Options,
     control: &Control,
     settings: &Settings,
-) -> Result<(Session, H264Decoder)> {
+) -> Result<(Session, H264Decoder, Option<ImageCaps>)> {
     let mut session = match &options.tcp {
         Some(address) => Session::connect_tcp(address)?,
         None => Session::connect_usb(options.port)?,
@@ -303,6 +423,25 @@ fn start_stream(
     let bitrate_kbps = options.bitrate_kbps.unwrap_or(settings.bitrate_kbps);
     session.set_camera(camera.camera_id)?;
     session.set_options(SetOptions { mirror: settings.mirror, rotation: 0, dim_preview: true })?;
+    // L'iPhone repart de ses propres défauts à chaque session : les réglages
+    // d'image sont donc rejoués à chaque connexion.
+    session.set_image(image_message(settings))?;
+    // L'ImageCaps arrive juste après le SetCamera. On l'attend ici, avant Start,
+    // pour ne pas avaler les premiers messages du flux en le guettant plus tard.
+    let image_caps = match session.wait_image_caps(Duration::from_millis(500)) {
+        Ok(Some(caps)) => {
+            publish_image_caps(&caps, &camera.label);
+            Some(caps)
+        }
+        Ok(None) => {
+            log::info!("cette caméra n'annonce pas ses plages (pas d'ImageCaps)");
+            None
+        }
+        Err(error) => {
+            log::debug!("ImageCaps: {error}");
+            None
+        }
+    };
     session.set_format(SetFormat { width, height, fps, codec: CODEC_H264, bitrate_kbps })?;
     session.start()?;
     log::info!(
@@ -312,7 +451,7 @@ fn start_stream(
         if settings.mirror { "oui" } else { "non" }
     );
 
-    Ok((session, H264Decoder::new(false)?))
+    Ok((session, H264Decoder::new(false)?, image_caps))
 }
 
 /// Caméra à utiliser : `--camera` est prioritaire, sinon la préférence des
@@ -409,5 +548,81 @@ fn report_error(error: &ProtocolError) {
     match error.code_label() {
         Some(code) => log::warn!("erreur iPhone [{:?}] {} — {}", code, code.label(), error.message),
         None => log::warn!("erreur iPhone [{}] {}", error.code, error.message),
+    }
+}
+
+/// Réglages image traduits en message `SetImage`.
+fn image_message(settings: &Settings) -> SetImage {
+    SetImage {
+        zoom_x100: settings.zoom_x100.min(u32::from(u16::MAX)) as u16,
+        exposure_mode: settings.exposure_mode,
+        exposure_bias_ev_x100: settings.exposure_bias_ev_x100,
+        iso: settings.iso,
+        exposure_duration_us: settings.exposure_duration_us,
+        focus_mode: settings.focus_mode,
+        focus_x_x10000: settings.focus_x_x10000,
+        focus_y_x10000: settings.focus_y_x10000,
+        wb_mode: settings.wb_mode,
+        wb_temp_k: settings.wb_temp_k,
+        wb_tint_x100: settings.wb_tint_x100,
+        torch: settings.torch,
+        stabilization: settings.stabilization,
+        hdr: settings.hdr,
+        torch_level: settings.torch_level,
+        focus_distance_x100: settings.focus_distance_x100,
+    }
+}
+
+/// Vrai si un réglage d'image a bougé (le format et le débit ont leur propre
+/// chemin, plus lourd : ils redémarrent la session).
+fn image_changed(previous: &Settings, updated: &Settings) -> bool {
+    image_message(previous) != image_message(updated)
+}
+
+/// Écrit `caps.ini` : ce que la caméra de l'iPhone sait faire, pour que la
+/// fenêtre de réglages borne ses curseurs. La dernière erreur connue est
+/// conservée.
+fn publish_image_caps(caps: &ImageCaps, label: &str) {
+    let file = CameraCaps {
+        camera_label: label.to_string(),
+        flags: u32::from(caps.flags),
+        zoom_max_x100: u32::from(caps.zoom_max_x100),
+        iso_min: u32::from(caps.iso_min),
+        iso_max: u32::from(caps.iso_max),
+        exposure_min_us: caps.exposure_min_us,
+        exposure_max_us: caps.exposure_max_us,
+        wb_min_k: u32::from(caps.wb_min_k),
+        wb_max_k: u32::from(caps.wb_max_k),
+        wb_tint_min_x100: i32::from(caps.wb_tint_min_x100),
+        wb_tint_max_x100: i32::from(caps.wb_tint_max_x100),
+        stabilization_modes: u32::from(caps.stabilization_modes),
+        last_error: CameraCaps::load().last_error,
+    };
+    log::info!(
+        "caméra « {} » : zoom max {}.{:02}×, ISO {}–{}, durée {}–{} µs, balance {}–{} K, \
+         stabilisation {:#04x}, plages publiées dans {}",
+        label,
+        caps.zoom_max_x100 / 100,
+        caps.zoom_max_x100 % 100,
+        caps.iso_min,
+        caps.iso_max,
+        caps.exposure_min_us,
+        caps.exposure_max_us,
+        caps.wb_min_k,
+        caps.wb_max_k,
+        caps.stabilization_modes,
+        wcl_agent::config::caps_path().display()
+    );
+    if let Err(error) = file.save() {
+        log::warn!("caps.ini non écrit: {error}");
+    }
+}
+
+/// Dernière erreur signalée par l'iPhone, dans `caps.ini`.
+fn publish_last_error(message: &str) {
+    let mut file = CameraCaps::load();
+    file.last_error = message.to_string();
+    if let Err(error) = file.save() {
+        log::warn!("caps.ini non écrit: {error}");
     }
 }

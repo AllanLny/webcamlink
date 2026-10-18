@@ -9,6 +9,8 @@
 #include <wrl/implements.h>
 
 #include <atomic>
+#include <algorithm>
+#include <cstring>
 #include <mutex>
 #include <vector>
 
@@ -17,6 +19,7 @@
 #include "logging_attributes.h"
 #include "shm_reader.h"
 #include "virtual_camera.h"
+#include "wcl_controls.h"
 
 using Microsoft::WRL::ComPtr;
 using Microsoft::WRL::RuntimeClass;
@@ -514,11 +517,12 @@ public:
         return MF_E_UNSUPPORTED_SERVICE;
     }
 
-    // IKsControl — the Frame Server treats a video capture source as a KS filter:
-    // the interface has to be there, and KS operations answer the way a driver
-    // without the property does.
-    STDMETHODIMP KsProperty(void*, ULONG, void*, ULONG, ULONG*) override {
-        return KsNotSupported(L"KsProperty");
+    // IKsControl — the Frame Server treats a video capture source as a KS filter.
+    // Client applications reach these properties to show their own image
+    // controls; the values reach the iPhone through the agent.
+    STDMETHODIMP KsProperty(void* property, ULONG property_length, void* data, ULONG data_length,
+                            ULONG* bytes_returned) override {
+        return HandleKsProperty(property, property_length, data, data_length, bytes_returned);
     }
     STDMETHODIMP KsMethod(void*, ULONG, void*, ULONG, ULONG*) override {
         return KsNotSupported(L"KsMethod");
@@ -531,6 +535,176 @@ public:
     MF_STREAM_STATE State() { return state_; }
 
 private:
+    /// Propriété cliente → valeur du bloc de contrôle partagé.
+    enum class ClientControl { Zoom, Exposure, Focus, Iso, WhiteBalance };
+
+    static bool MatchControl(const wcl::KsPropertyRequest& request, ClientControl& control) {
+        if (IsEqualGUID(request.set, wcl::kPropsetCameraControl)) {
+            switch (request.id) {
+                case wcl::kCameraControlZoom: control = ClientControl::Zoom; return true;
+                case wcl::kCameraControlExposure: control = ClientControl::Exposure; return true;
+                case wcl::kCameraControlFocus: control = ClientControl::Focus; return true;
+                default: return false;
+            }
+        }
+        if (IsEqualGUID(request.set, wcl::kPropsetVideoProcAmp)) {
+            switch (request.id) {
+                case wcl::kVideoProcAmpGain: control = ClientControl::Iso; return true;
+                case wcl::kVideoProcAmpWhiteBalance:
+                    control = ClientControl::WhiteBalance;
+                    return true;
+                default: return false;
+            }
+        }
+        return false;
+    }
+
+    /// GET renvoie la dernière valeur appliquée, SET dépose une demande et
+    /// incrémente la génération que l'agent surveille. Une propriété inconnue
+    /// répond ERROR_SET_NOT_FOUND : c'est ce que les clients testent pour
+    /// griser un contrôle.
+    HRESULT HandleKsProperty(void* property, ULONG property_length, void* data,
+                             ULONG data_length, ULONG* bytes_returned) {
+        if (!bytes_returned) {
+            return E_POINTER;
+        }
+        *bytes_returned = 0;
+        if (!property || property_length < sizeof(wcl::KsPropertyRequest)) {
+            return E_INVALIDARG;
+        }
+
+        const auto& request = *static_cast<const wcl::KsPropertyRequest*>(property);
+        ClientControl control = ClientControl::Zoom;
+        if (!MatchControl(request, control)) {
+            KsNotSupported(L"KsProperty(inconnue)");
+            return HRESULT_FROM_WIN32(ERROR_SET_NOT_FOUND);
+        }
+
+        if (!controls_.IsOpen() && !controls_.Create()) {
+            return HRESULT_FROM_WIN32(ERROR_SET_NOT_FOUND);
+        }
+        wcl::ControlsBlock* block = controls_.Block();
+        if (!block) {
+            return HRESULT_FROM_WIN32(ERROR_SET_NOT_FOUND);
+        }
+
+        if (request.flags & wcl::kPropertyTypeBasicSupport) {
+            // Description seule, sans liste de bornes : la structure de membres
+            // de KS porte un pointeur, inutilisable entre processus, et des
+            // bornes inventées valent moins que celles des clients.
+            if (!data || data_length < sizeof(wcl::KsPropertyDescription)) {
+                return E_INVALIDARG;
+            }
+            wcl::KsPropertyDescription description{};
+            description.access_flags = wcl::kPropertyTypeGet | wcl::kPropertyTypeSet;
+            description.description_size = sizeof(wcl::KsPropertyDescription);
+            description.property_type_set = request.set;
+            description.members_list_count = 0;
+            std::memcpy(data, &description, sizeof(description));
+            *bytes_returned = sizeof(description);
+            return S_OK;
+        }
+
+        if (!data || data_length < wcl::kKsPropertyValueSize) {
+            return E_INVALIDARG;
+        }
+        auto* value = static_cast<wcl::KsPropertyValue*>(data);
+
+        if (request.flags & wcl::kPropertyTypeGet) {
+            if (!block->applied_available) {
+                return HRESULT_FROM_WIN32(ERROR_SET_NOT_FOUND);
+            }
+            switch (control) {
+                case ClientControl::Zoom:
+                    value->value = static_cast<LONG>(block->applied_zoom_x100);
+                    value->flags = wcl::kCameraControlFlagManual;
+                    break;
+                case ClientControl::Exposure:
+                    value->value = static_cast<LONG>(block->applied_exposure_us);
+                    value->flags = block->applied_flags & wcl::kControlsFlagAutoExposure
+                                       ? wcl::kCameraControlFlagAuto
+                                       : wcl::kCameraControlFlagManual;
+                    break;
+                case ClientControl::Focus:
+                    value->value = static_cast<LONG>(block->applied_focus_x100);
+                    value->flags = block->applied_flags & wcl::kControlsFlagAutoFocus
+                                       ? wcl::kCameraControlFlagAuto
+                                       : wcl::kCameraControlFlagManual;
+                    break;
+                case ClientControl::Iso:
+                    value->value = static_cast<LONG>(block->applied_iso);
+                    value->flags = block->applied_flags & wcl::kControlsFlagAutoExposure
+                                       ? wcl::kCameraControlFlagAuto
+                                       : wcl::kCameraControlFlagManual;
+                    break;
+                case ClientControl::WhiteBalance:
+                    value->value = static_cast<LONG>(block->applied_white_balance_k);
+                    value->flags = block->applied_flags & wcl::kControlsFlagAutoWhiteBalance
+                                       ? wcl::kCameraControlFlagAuto
+                                       : wcl::kCameraControlFlagManual;
+                    break;
+            }
+            value->capabilities = 0;
+            *bytes_returned = wcl::kKsPropertyValueSize;
+            return S_OK;
+        }
+
+        if (request.flags & wcl::kPropertyTypeSet) {
+            const bool automatic = (value->flags & wcl::kCameraControlFlagAuto) != 0;
+            switch (control) {
+                case ClientControl::Zoom:
+                    block->zoom_x100 =
+                        value->value > 0 ? static_cast<uint32_t>(value->value) : 100;
+                    break;
+                case ClientControl::Exposure:
+                    if (automatic) {
+                        block->flags |= wcl::kControlsFlagAutoExposure;
+                    } else {
+                        block->flags &= ~wcl::kControlsFlagAutoExposure;
+                        if (value->value > 0) {
+                            block->exposure_us = static_cast<uint32_t>(value->value);
+                        }
+                    }
+                    break;
+                case ClientControl::Focus:
+                    if (automatic) {
+                        block->flags |= wcl::kControlsFlagAutoFocus;
+                    } else {
+                        block->flags &= ~wcl::kControlsFlagAutoFocus;
+                        block->focus_x100 =
+                            static_cast<uint32_t>(std::clamp<LONG>(value->value, 0, 100));
+                    }
+                    break;
+                case ClientControl::Iso:
+                    if (automatic) {
+                        block->flags |= wcl::kControlsFlagAutoExposure;
+                    } else {
+                        block->flags &= ~wcl::kControlsFlagAutoExposure;
+                        if (value->value > 0) {
+                            block->iso = static_cast<uint32_t>(value->value);
+                        }
+                    }
+                    break;
+                case ClientControl::WhiteBalance:
+                    if (automatic) {
+                        block->flags |= wcl::kControlsFlagAutoWhiteBalance;
+                    } else {
+                        block->flags &= ~wcl::kControlsFlagAutoWhiteBalance;
+                        if (value->value > 0) {
+                            block->white_balance_k = static_cast<uint32_t>(value->value);
+                        }
+                    }
+                    break;
+            }
+            controls_.BumpClientGeneration();
+            return S_OK;
+        }
+
+        return E_INVALIDARG;
+    }
+
+    wcl::ControlsMapping controls_;
+
     /// Start() body, split out so the wrapper logs every exit path. Starting an
     /// already running source is allowed: the pipeline restarts streams between
     /// clients, and refusing that transition fails the client's first read.
@@ -553,6 +727,9 @@ private:
         if (!shm_.Open(config_.width, config_.height, config_.fps)) {
             return MF_E_SHUTDOWN;
         }
+        // The client-facing controls live in their own mapping; absent, the
+        // agent simply does not mirror any client request.
+        controls_.Create();
         state_ = MF_STREAM_STATE_RUNNING;
         camera_stream_->SetStreamStateStateOnly(MF_STREAM_STATE_RUNNING);
 

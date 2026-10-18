@@ -511,6 +511,166 @@ fn is_not_found(error: &windows::core::Error) -> bool {
     error.code() == windows::core::HRESULT::from_win32(ERROR_FILE_NOT_FOUND.0)
 }
 
+// --- Contrôles d'image exposés aux applications clientes ---
+
+/// Nom du mapping créé par la DLL pour les réglages image. Séparé de
+/// `WclShm` : une DLL plus ancienne ne le crée pas et la vidéo continue.
+pub const CONTROLS_NAME: &str = "Global\\WclControls";
+
+pub const CONTROLS_FLAG_AUTO_EXPOSURE: u32 = 1 << 0;
+pub const CONTROLS_FLAG_AUTO_WHITE_BALANCE: u32 = 1 << 1;
+pub const CONTROLS_FLAG_AUTO_FOCUS: u32 = 1 << 2;
+
+/// Disposition partagée avec `wcl::ControlsBlock` (C++) : mêmes champs, même
+/// ordre, uniquement des u32/i32, donc aucun remplissage d'un côté ni de
+/// l'autre.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ControlsBlock {
+    pub version: u32,
+    pub size: u32,
+    pub client_generation: u32,
+    pub applied_generation: u32,
+    pub flags: u32,
+    pub zoom_x100: u32,
+    pub exposure_bias_ev_x100: i32,
+    pub iso: u32,
+    pub exposure_us: u32,
+    pub white_balance_k: u32,
+    pub focus_x100: u32,
+    pub range_valid: u32,
+    pub zoom_max_x100: u32,
+    pub iso_min: u32,
+    pub iso_max: u32,
+    pub exposure_min_us: u32,
+    pub exposure_max_us: u32,
+    pub wb_min_k: u32,
+    pub wb_max_k: u32,
+    pub applied_flags: u32,
+    pub applied_zoom_x100: u32,
+    pub applied_exposure_bias_ev_x100: i32,
+    pub applied_iso: u32,
+    pub applied_exposure_us: u32,
+    pub applied_white_balance_k: u32,
+    pub applied_focus_x100: u32,
+    pub applied_available: u32,
+}
+
+/// Ce que l'agent publie à destination des GET des clients.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AppliedControls {
+    pub generation: u32,
+    pub flags: u32,
+    pub zoom_x100: u32,
+    pub iso: u32,
+    pub exposure_us: u32,
+    pub white_balance_k: u32,
+    pub focus_x100: u32,
+    pub available: bool,
+}
+
+/// Ouverture du mapping de contrôle (créé par la DLL, session 0).
+pub struct ControlsMapping {
+    view: MEMORY_MAPPED_VIEW_ADDRESS,
+    mapping: HANDLE,
+}
+
+// Le mapping n'est touché que par le fil de travail de l'agent.
+unsafe impl Send for ControlsMapping {}
+
+impl ControlsMapping {
+    /// `Ok(None)` : la DLL ne l'a pas créé (version antérieure, ou caméra
+    /// jamais démarrée depuis) — les contrôles clients restent inactifs.
+    pub fn open() -> Result<Option<Self>> {
+        let name = wide(CONTROLS_NAME);
+        let mapping = unsafe {
+            OpenFileMappingW(FILE_MAP_READ.0 | FILE_MAP_WRITE.0, false, PCWSTR(name.as_ptr()))
+        };
+        let mapping = match mapping {
+            Ok(handle) => handle,
+            Err(error) if is_not_found(&error) => return Ok(None),
+            Err(error) => return Err(error).context("OpenFileMappingW(controls)"),
+        };
+        let view = unsafe { MapViewOfFile(mapping, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, 0) };
+        if view.Value.is_null() {
+            unsafe {
+                let _ = CloseHandle(mapping);
+            }
+            return Err(anyhow::anyhow!("MapViewOfFile(controls) a échoué"));
+        }
+        Ok(Some(Self { view, mapping }))
+    }
+
+    fn raw(&self) -> *const ControlsBlock {
+        self.view.Value as *const ControlsBlock
+    }
+
+    fn raw_mut(&self) -> *mut ControlsBlock {
+        self.view.Value as *mut ControlsBlock
+    }
+
+    /// Instantané du bloc. Le champ `client_generation` fait office de seqlock :
+    /// relire la génération après coup et recommencer si elle a bougé.
+    pub fn snapshot(&self) -> ControlsBlock {
+        for _ in 0..8 {
+            let before = unsafe { std::ptr::read_volatile(&(*self.raw()).client_generation) };
+            let block = unsafe { std::ptr::read_volatile(self.raw()) };
+            let after = unsafe { std::ptr::read_volatile(&(*self.raw()).client_generation) };
+            if before == after {
+                return block;
+            }
+        }
+        unsafe { std::ptr::read_volatile(self.raw()) }
+    }
+
+    /// Plages annoncées par la caméra, pour les clients (elles viennent du
+    /// dernier `ImageCaps`).
+    pub fn publish_ranges(&self, caps: &crate::protocol::ImageCaps) {
+        let block = self.raw_mut();
+        unsafe {
+            std::ptr::write_volatile(&mut (*block).zoom_max_x100, u32::from(caps.zoom_max_x100));
+            std::ptr::write_volatile(&mut (*block).iso_min, u32::from(caps.iso_min));
+            std::ptr::write_volatile(&mut (*block).iso_max, u32::from(caps.iso_max));
+            std::ptr::write_volatile(&mut (*block).exposure_min_us, caps.exposure_min_us);
+            std::ptr::write_volatile(&mut (*block).exposure_max_us, caps.exposure_max_us);
+            std::ptr::write_volatile(&mut (*block).wb_min_k, u32::from(caps.wb_min_k));
+            std::ptr::write_volatile(&mut (*block).wb_max_k, u32::from(caps.wb_max_k));
+            std::ptr::write_volatile(&mut (*block).range_valid, 1);
+        }
+    }
+
+    /// Ce que l'iPhone a réellement reçu, relu par les GET des clients.
+    pub fn publish_applied(&self, applied: &AppliedControls) {
+        let block = self.raw_mut();
+        unsafe {
+            std::ptr::write_volatile(&mut (*block).applied_flags, applied.flags);
+            std::ptr::write_volatile(&mut (*block).applied_zoom_x100, applied.zoom_x100);
+            std::ptr::write_volatile(&mut (*block).applied_iso, applied.iso);
+            std::ptr::write_volatile(&mut (*block).applied_exposure_us, applied.exposure_us);
+            std::ptr::write_volatile(
+                &mut (*block).applied_white_balance_k,
+                applied.white_balance_k,
+            );
+            std::ptr::write_volatile(&mut (*block).applied_focus_x100, applied.focus_x100);
+            std::ptr::write_volatile(
+                &mut (*block).applied_available,
+                u32::from(applied.available),
+            );
+            // En dernier : la génération reprise, qui vaut acquittement.
+            std::ptr::write_volatile(&mut (*block).applied_generation, applied.generation);
+        }
+    }
+}
+
+impl Drop for ControlsMapping {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = UnmapViewOfFile(self.view);
+            let _ = CloseHandle(self.mapping);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

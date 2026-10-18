@@ -18,8 +18,10 @@ que voient Teams, Zoom, OBS, l'app Caméra, etc.
 - [Utilisation](#utilisation)
 - [Dépannage](#dépannage)
 - [Développement sans iPhone](#développement-sans-iphone)
+- [Aperçu de l'app iOS (sans Mac)](#aperçu-de-lapp-ios-sans-mac)
 - [Structure du dépôt](#structure-du-dépôt)
 - [État du projet](#état-du-projet)
+- [Mode automatique (iOS)](#mode-automatique-ios)
 - [Contraintes iOS](#contraintes-ios)
 - [Distribution de l'app iOS](#distribution-de-lapp-ios)
 - [Contribuer](#contribuer)
@@ -144,6 +146,35 @@ mirror=0
 > Une valeur hors bornes est ramenée dans la plage. Les commentaires ne sont pas acceptés dans les
 > lignes de valeurs (la DLL lit le fichier avec les API INI de Windows).
 
+### Réglages image
+
+Le bouton **« Réglages image… »** (ou clic droit sur l'icône → même entrée) ouvre les contrôles « pro »
+de la caméra iPhone : zoom, exposition (automatique / biais en EV / manuelle **ISO + durée**), balance
+des blancs (automatique / verrouillée / manuelle en kelvins + teinte), mise au point (continu /
+verrouillée à une distance / point + verrou), torche et son niveau, stabilisation, HDR.
+
+- Les curseurs sont **bornés par ce que la caméra annonce** : l'agent écrit `caps.ini`
+  (`%ProgramData%\WebcamLink\`, plage ISO, durées minimale et maximale, zoom maximal, balance, modes)
+  à la connexion de l'iPhone, et la fenêtre s'en sert. Un contrôle que la caméra ne sait pas faire est
+  **grisé**, tout comme ce que le mode courant rend sans effet (ISO et durée en automatique, teinte en
+  balance automatique, niveau de torche quand elle est éteinte).
+- **« Tout auto »** remet zoom, exposition, balance, mise au point, torche et stabilisation en
+  automatique.
+- Ces réglages s'appliquent **à chaud**, même pendant un flux (~250 ms : l'agent relit le fichier quatre
+  fois par seconde). Hors flux, ils sont mémorisés et rejoués à la connexion suivante. Un mode refusé
+  par la caméra est affiché dans la fenêtre **sans interrompre le flux**.
+- Les clés correspondantes vivent dans la section `[image]` de `config.ini` (`zoom_x100`,
+  `exposure_mode`, `exposure_bias_ev_x100`, `iso`, `exposure_us`, `focus_mode`, `focus_x_x10000`,
+  `focus_y_x10000`, `focus_distance_x100`, `wb_mode`, `wb_temp_k`, `wb_tint_x100`, `torch`,
+  `torch_level`, `stabilization`, `hdr`).
+- **Applications clientes** : ces réglages sont aussi exposés à la caméra virtuelle via `IKsControl`
+  (`Zoom`, `Exposure`, `Focus` en contrôle caméra ; `Gain` ↔ ISO et `WhiteBalance` ↔ température en
+  proc amp). Une application qui bouge un curseur dépose sa demande dans un mapping partagé
+  (`Global\WclControls`, décrit dans [docs/shm.md](docs/shm.md)) ; l'agent la reprend dans
+  `config.ini`, donc elle suit exactement le même chemin que la fenêtre image. Une DLL antérieure ne
+  crée pas ce mapping : la vidéo n'en est pas affectée, seuls les contrôles clients restent
+  indisponibles.
+
 ## Utilisation
 
 Menu de l'icône (clic droit) : **Réglages…**, **Démarrer/Arrêter l'agent**, **Ouvrir le journal**,
@@ -184,6 +215,20 @@ cargo run --release --bin wcl-view -- --tcp 127.0.0.1:5321    # aperçu (--no-wi
 
 Avec un iPhone branché (app lancée, écran allumé) : `wcl-view` sans `--tcp` passe par usbmuxd.
 
+## Aperçu de l'app iOS (sans Mac)
+
+Trois niveaux, du plus rapide au plus complet :
+
+1. **Captures d'écran automatiques** — le workflow `preview` compile l'app pour le simulateur iOS sur un
+   runner macOS, la lance et publie `apercu-clair.png` / `apercu-sombre.png` en artefacts du run. Il se
+   déclenche à la demande (`Actions → preview → Run workflow`, sur n'importe quelle branche) et sur les
+   PR qui touchent `ios/**` ; les images se téléchargent depuis le résumé du job.
+2. **Compilation** — `ci.yml` (job `ios`) compile l'app non signée à chaque PR : c'est ce qui attrape
+   les erreurs Swift, sans montrer l'écran.
+3. **Sur l'iPhone** — lance `build-ipa` (`Run workflow`) en choisissant la branche, récupère l'IPA non
+   signée dans les artefacts et installe-la avec Sideloadly ou AltStore : caméra et PC compris, c'est la
+   vraie app.
+
 ## Structure du dépôt
 
 ```
@@ -217,14 +262,38 @@ altstore/                source AltStore (source.json)
 - **P3 / P5 — à venir** : contrôles d'image (zoom, exposition, mise au point) et MSI WiX (installation,
   enregistrement, autostart).
 
+## Mode automatique (iOS)
+
+L'app expose un menu **Mode automatique** :
+
+- **Alerter quand le PC demande** — notification locale (sonore si voulu) dès qu'un client se connecte
+  alors que l'app n'est plus à l'écran ; un appui dessus revient sur l'app, qui redémarre le flux. Une
+  demande toutes les 30 s au maximum, pour ne pas inonder le centre de notifications.
+- **Rester joignable en arrière-plan** — l'app joue un silence (mode audio de fond) pour que le
+  listener survive hors écran : sans lui, iOS suspend le process et le PC ne peut plus rien demander.
+- **Garder l'écran allumé** — l'écran ne s'éteint plus tant que l'app est ouverte.
+
+Ce qu'iOS **ne permet pas**, pour aucune app : déverrouiller l'appareil ou rallumer l'écran depuis
+l'extérieur, et ramener une app au premier plan toute seule. Le « déverrouillage automatique » passe
+donc par la configuration du téléphone :
+
+1. iPhone **sans code** (ou code désactivé pendant l'usage webcam) : au rallumage, l'app est déjà au
+   premier plan, il n'y a rien à déverrouiller ;
+2. **Verrouillage auto → Jamais** (Réglages → Affichage et luminosité) ;
+3. **Accès guidé** (Réglages → Accessibilité) pour verrouiller le téléphone sur WebcamLink ;
+4. **Raccourcis → Automatisation → Chargeur → « Ouvrir WebcamLink »** : l'app revient seule au premier
+   plan dès que le téléphone est branché.
+
+Le téléphone devient alors une webcam dédiée : on le branche, l'app s'ouvre, le PC se connecte et le
+flux démarre sans intervention.
+
 ## Contraintes iOS
 
-- La caméra ne fonctionne que si l'app est **au premier plan** ; écran verrouillé = capture impossible.
-- Le PC ne peut ni déverrouiller l'iPhone ni mettre l'app au premier plan (aucune API).
-- Mode veille : l'app reste ouverte, écran maintenu allumé, aperçu assombri → le PC démarre le flux
-  automatiquement.
-- Alerte de secours : si l'app est en arrière-plan (gardée vivante), une notification locale + son
-  prévient quand le PC demande la caméra.
+- La caméra ne fonctionne que si l'app est **au premier plan** ; écran éteint = capture impossible.
+- Le PC ne peut ni déverrouiller l'iPhone ni mettre l'app au premier plan (aucune API) : il se connecte,
+  l'app prévient par une notification, et le flux démarre dès que le téléphone revient.
+- Mode veille : l'app reste ouverte, écran maintenu allumé → le PC démarre le flux automatiquement.
+- Si l'app passe en arrière-plan, elle envoie `NotInForeground` au PC plutôt que de laisser un flux muet.
 
 ## Distribution de l'app iOS
 

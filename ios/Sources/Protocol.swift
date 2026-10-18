@@ -3,6 +3,7 @@ import Foundation
 enum WclMessageType: UInt8 {
     case hello = 0x01
     case caps = 0x02
+    case imageCaps = 0x03
     case setCamera = 0x10
     case setFormat = 0x11
     case start = 0x12
@@ -59,6 +60,7 @@ enum WclErrorCode: UInt16 {
     case encoderFailure = 5
     case thermalShutdown = 6
     case notInForeground = 7
+    case imageUnsupported = 8
 }
 
 struct WclFrame {
@@ -299,6 +301,61 @@ struct WclCaps {
     }
 }
 
+// MARK: - ImageCaps (device → PC)
+
+struct WclImageCapsFlags {
+    static let torch: UInt16 = 1 << 0
+    static let torchLevel: UInt16 = 1 << 1
+    static let zoom: UInt16 = 1 << 2
+    static let iso: UInt16 = 1 << 3
+    static let exposureDuration: UInt16 = 1 << 4
+    static let whiteBalance: UInt16 = 1 << 5
+    static let focusPoint: UInt16 = 1 << 6
+    static let focusDistance: UInt16 = 1 << 7
+    static let stabilization: UInt16 = 1 << 8
+    static let hdr: UInt16 = 1 << 9
+}
+
+struct WclStabilizationModes {
+    static let off: UInt8 = 1 << 0
+    static let standard: UInt8 = 1 << 1
+    static let cinematic: UInt8 = 1 << 2
+}
+
+/// What the selected camera can do and over which range. Ranges are the widest
+/// seen across the camera's formats: the device clamps again when it applies.
+struct WclImageCaps {
+    var flags: UInt16 = 0
+    var zoomMaxX100: UInt16 = 100
+    var isoMin: UInt16 = 0
+    var isoMax: UInt16 = 0
+    var exposureMinUs: UInt32 = 0
+    var exposureMaxUs: UInt32 = 0
+    var whiteBalanceMinK: UInt16 = 0
+    var whiteBalanceMaxK: UInt16 = 0
+    var whiteBalanceTintMinX100: Int16 = 0
+    var whiteBalanceTintMaxX100: Int16 = 0
+    var stabilizationModes: UInt8 = 0
+
+    func supports(_ flag: UInt16) -> Bool { flags & flag != 0 }
+
+    func encoded() -> Data {
+        var writer = WclWriter()
+        writer.u16(flags)
+        writer.u16(zoomMaxX100)
+        writer.u16(isoMin)
+        writer.u16(isoMax)
+        writer.u32(exposureMinUs)
+        writer.u32(exposureMaxUs)
+        writer.u16(whiteBalanceMinK)
+        writer.u16(whiteBalanceMaxK)
+        writer.u16(UInt16(bitPattern: whiteBalanceTintMinX100))
+        writer.u16(UInt16(bitPattern: whiteBalanceTintMaxX100))
+        writer.u8(stabilizationModes)
+        return writer.data
+    }
+}
+
 // MARK: - PC → device
 
 struct WclSetCamera {
@@ -345,6 +402,30 @@ struct WclSetOptions {
 
 /// Image controls. Every field is optional on the wire: a field that is absent
 /// keeps the current value (see `docs/protocol.md`).
+struct WclExposureMode {
+    static let auto: UInt8 = 0
+    static let bias: UInt8 = 1
+    static let manual: UInt8 = 2
+}
+
+struct WclFocusMode {
+    static let continuous: UInt8 = 0
+    static let locked: UInt8 = 1
+    static let point: UInt8 = 2
+}
+
+struct WclWhiteBalanceMode {
+    static let auto: UInt8 = 0
+    static let locked: UInt8 = 1
+    static let manual: UInt8 = 2
+}
+
+struct WclStabilization {
+    static let off: UInt8 = 0
+    static let standard: UInt8 = 1
+    static let cinematic: UInt8 = 2
+}
+
 struct WclSetImage {
     var zoomX100: UInt16 = 100
     var exposureMode: UInt8 = 0
@@ -360,6 +441,8 @@ struct WclSetImage {
     var torch: Bool = false
     var stabilization: UInt8 = 0
     var hdr: Bool = false
+    var torchLevel: UInt8 = 100
+    var focusDistanceX100: UInt16 = 100
 
     /// Applies the fields present in `payload` on top of the current state.
     func updated(with payload: Data) -> WclSetImage {
@@ -379,6 +462,8 @@ struct WclSetImage {
         if let torch = reader.u8() { value.torch = torch != 0 }
         if let stabilization = reader.u8() { value.stabilization = stabilization }
         if let hdr = reader.u8() { value.hdr = hdr != 0 }
+        if let level = reader.u8() { value.torchLevel = level }
+        if let distance = reader.u16() { value.focusDistanceX100 = distance }
         return value
     }
 }

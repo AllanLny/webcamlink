@@ -29,6 +29,7 @@ pub const FRAME_FLAG_KEYFRAME: u8 = 1 << 0;
 pub enum MessageType {
     Hello = 0x01,
     Caps = 0x02,
+    ImageCaps = 0x03,
     SetCamera = 0x10,
     SetFormat = 0x11,
     Start = 0x12,
@@ -48,6 +49,7 @@ impl MessageType {
         Some(match value {
             0x01 => Self::Hello,
             0x02 => Self::Caps,
+            0x03 => Self::ImageCaps,
             0x10 => Self::SetCamera,
             0x11 => Self::SetFormat,
             0x12 => Self::Start,
@@ -346,6 +348,101 @@ impl Caps {
     }
 }
 
+// MARK: - ImageCaps (0x03)
+
+pub const IMAGE_CAPS_TORCH: u16 = 1 << 0;
+pub const IMAGE_CAPS_TORCH_LEVEL: u16 = 1 << 1;
+pub const IMAGE_CAPS_ZOOM: u16 = 1 << 2;
+pub const IMAGE_CAPS_ISO: u16 = 1 << 3;
+pub const IMAGE_CAPS_EXPOSURE_DURATION: u16 = 1 << 4;
+pub const IMAGE_CAPS_WHITE_BALANCE: u16 = 1 << 5;
+pub const IMAGE_CAPS_FOCUS_POINT: u16 = 1 << 6;
+pub const IMAGE_CAPS_FOCUS_DISTANCE: u16 = 1 << 7;
+pub const IMAGE_CAPS_STABILIZATION: u16 = 1 << 8;
+pub const IMAGE_CAPS_HDR: u16 = 1 << 9;
+
+pub const STABILIZATION_OFF: u8 = 1 << 0;
+pub const STABILIZATION_STANDARD: u8 = 1 << 1;
+pub const STABILIZATION_CINEMATIC: u8 = 1 << 2;
+
+/// What the selected camera can do and over which range. Sent after `Hello` and
+/// again after every `SetCamera`, because the ranges belong to the camera — and,
+/// for ISO and exposure, to the format that ends up active.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ImageCaps {
+    pub flags: u16,
+    pub zoom_max_x100: u16,
+    pub iso_min: u16,
+    pub iso_max: u16,
+    pub exposure_min_us: u32,
+    pub exposure_max_us: u32,
+    pub wb_min_k: u16,
+    pub wb_max_k: u16,
+    pub wb_tint_min_x100: i16,
+    pub wb_tint_max_x100: i16,
+    pub stabilization_modes: u8,
+}
+
+impl Default for ImageCaps {
+    fn default() -> Self {
+        Self {
+            flags: 0,
+            zoom_max_x100: 100,
+            iso_min: 0,
+            iso_max: 0,
+            exposure_min_us: 0,
+            exposure_max_us: 0,
+            wb_min_k: 0,
+            wb_max_k: 0,
+            wb_tint_min_x100: 0,
+            wb_tint_max_x100: 0,
+            stabilization_modes: 0,
+        }
+    }
+}
+
+impl ImageCaps {
+    pub fn supports(&self, flag: u16) -> bool {
+        self.flags & flag != 0
+    }
+
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        push_u16(&mut out, self.flags);
+        push_u16(&mut out, self.zoom_max_x100);
+        push_u16(&mut out, self.iso_min);
+        push_u16(&mut out, self.iso_max);
+        push_u32(&mut out, self.exposure_min_us);
+        push_u32(&mut out, self.exposure_max_us);
+        push_u16(&mut out, self.wb_min_k);
+        push_u16(&mut out, self.wb_max_k);
+        push_u16(&mut out, self.wb_tint_min_x100 as u16);
+        push_u16(&mut out, self.wb_tint_max_x100 as u16);
+        push_u8(&mut out, self.stabilization_modes);
+        out
+    }
+
+    /// Every field falls back to its default when absent, so an older iPhone
+    /// that only knows part of the message still yields usable ranges.
+    pub fn decode(payload: &[u8]) -> Result<Self> {
+        let mut reader = PayloadReader::new(payload);
+        let fallback = Self::default();
+        Ok(Self {
+            flags: reader.u16().unwrap_or(fallback.flags),
+            zoom_max_x100: reader.u16().unwrap_or(fallback.zoom_max_x100),
+            iso_min: reader.u16().unwrap_or(fallback.iso_min),
+            iso_max: reader.u16().unwrap_or(fallback.iso_max),
+            exposure_min_us: reader.u32().unwrap_or(fallback.exposure_min_us),
+            exposure_max_us: reader.u32().unwrap_or(fallback.exposure_max_us),
+            wb_min_k: reader.u16().unwrap_or(fallback.wb_min_k),
+            wb_max_k: reader.u16().unwrap_or(fallback.wb_max_k),
+            wb_tint_min_x100: reader.u16().unwrap_or(0) as i16,
+            wb_tint_max_x100: reader.u16().unwrap_or(0) as i16,
+            stabilization_modes: reader.u8().unwrap_or(fallback.stabilization_modes),
+        })
+    }
+}
+
 // MARK: - SetCamera (0x10)
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -455,6 +552,8 @@ pub struct SetImage {
     pub torch: bool,
     pub stabilization: u8,
     pub hdr: bool,
+    pub torch_level: u8,
+    pub focus_distance_x100: u16,
 }
 
 impl Default for SetImage {
@@ -474,6 +573,8 @@ impl Default for SetImage {
             torch: false,
             stabilization: 0,
             hdr: false,
+            torch_level: 100,
+            focus_distance_x100: 100,
         }
     }
 }
@@ -495,6 +596,8 @@ impl SetImage {
         push_u8(&mut out, self.torch as u8);
         push_u8(&mut out, self.stabilization);
         push_u8(&mut out, self.hdr as u8);
+        push_u8(&mut out, self.torch_level);
+        push_u16(&mut out, self.focus_distance_x100);
         out
     }
 
@@ -523,6 +626,8 @@ impl SetImage {
         field!(u8, self.torch, |v: u8| v != 0);
         field!(u8, self.stabilization, |v: u8| v);
         field!(u8, self.hdr, |v: u8| v != 0);
+        field!(u8, self.torch_level, |v: u8| v);
+        field!(u16, self.focus_distance_x100, |v: u16| v);
         Ok(self)
     }
 }
@@ -666,6 +771,7 @@ pub enum ErrorCode {
     EncoderFailure = 5,
     ThermalShutdown = 6,
     NotInForeground = 7,
+    ImageUnsupported = 8,
 }
 
 impl ErrorCode {
@@ -678,6 +784,7 @@ impl ErrorCode {
             5 => Self::EncoderFailure,
             6 => Self::ThermalShutdown,
             7 => Self::NotInForeground,
+            8 => Self::ImageUnsupported,
             _ => return None,
         })
     }
@@ -691,6 +798,7 @@ impl ErrorCode {
             Self::EncoderFailure => "échec de l'encodeur iPhone",
             Self::ThermalShutdown => "arrêt thermique (iPhone trop chaud)",
             Self::NotInForeground => "l'app iPhone doit être au premier plan",
+            Self::ImageUnsupported => "réglage d'image non supporté par cette caméra",
         }
     }
 }
@@ -797,8 +905,43 @@ mod tests {
             torch: true,
             stabilization: 1,
             hdr: true,
+            torch_level: 80,
+            focus_distance_x100: 30,
         };
         assert_eq!(message, SetImage::default().decode_into(&message.encode()).unwrap());
+    }
+
+    #[test]
+    fn image_caps_round_trip() {
+        let message = ImageCaps {
+            flags: IMAGE_CAPS_TORCH | IMAGE_CAPS_ZOOM | IMAGE_CAPS_ISO | IMAGE_CAPS_STABILIZATION,
+            zoom_max_x100: 800,
+            iso_min: 25,
+            iso_max: 3200,
+            exposure_min_us: 100,
+            exposure_max_us: 1_000_000,
+            wb_min_k: 2000,
+            wb_max_k: 9000,
+            wb_tint_min_x100: -150,
+            wb_tint_max_x100: 150,
+            stabilization_modes: STABILIZATION_OFF | STABILIZATION_STANDARD,
+        };
+        assert_eq!(message, ImageCaps::decode(&message.encode()).unwrap());
+        assert!(message.supports(IMAGE_CAPS_ISO));
+        assert!(!message.supports(IMAGE_CAPS_HDR));
+    }
+
+    #[test]
+    fn image_caps_truncated_uses_defaults() {
+        let message = ImageCaps {
+            flags: IMAGE_CAPS_ZOOM,
+            zoom_max_x100: 1000,
+            ..Default::default()
+        };
+        let decoded = ImageCaps::decode(&message.encode()[..4]).unwrap();
+        assert_eq!(decoded.flags, IMAGE_CAPS_ZOOM);
+        assert_eq!(decoded.zoom_max_x100, 1000);
+        assert_eq!(decoded.iso_max, 0, "les champs absents prennent leur défaut");
     }
 
     #[test]
@@ -963,5 +1106,73 @@ mod tests {
             0, 0, 0, 1, 0x67, 0x42, // SPS
         ];
         assert_eq!(config.encode(), expected_config);
+
+        // SetImage: the two fields added for the pro controls must land at the
+        // end, after everything the v1 documentation already describes.
+        let image = SetImage {
+            zoom_x100: 250,
+            exposure_mode: EXPOSURE_MANUAL,
+            exposure_bias_ev_x100: -75,
+            iso: 800,
+            exposure_duration_us: 16_666,
+            focus_mode: FOCUS_POINT,
+            focus_x_x10000: 2500,
+            focus_y_x10000: 7500,
+            wb_mode: WB_MANUAL,
+            wb_temp_k: 5600,
+            wb_tint_x100: -20,
+            torch: true,
+            stabilization: 1,
+            hdr: true,
+            torch_level: 80,
+            focus_distance_x100: 100,
+        };
+        let expected_image = vec![
+            0xFA, 0x00, // zoom 2.50×
+            0x02, // exposition manuelle
+            0xB5, 0xFF, // biais -0.75 EV
+            0x20, 0x03, // ISO 800
+            0x1A, 0x41, 0x00, 0x00, // 16 666 µs
+            0x02, // point + verrou
+            0xC4, 0x09, // point x 0.25
+            0x4C, 0x1D, // point y 0.75
+            0x02, // balance manuelle
+            0xE0, 0x15, // 5600 K
+            0xEC, 0xFF, // teinte -0.20
+            0x01, // torche
+            0x01, // stabilisation standard
+            0x01, // HDR
+            0x50, // niveau de torche 80 %
+            0x64, 0x00, // distance de focus 1.00
+        ];
+        assert_eq!(image.encode(), expected_image);
+
+        let image_caps = ImageCaps {
+            flags: IMAGE_CAPS_TORCH | IMAGE_CAPS_ZOOM,
+            zoom_max_x100: 1000,
+            iso_min: 25,
+            iso_max: 3200,
+            exposure_min_us: 100,
+            exposure_max_us: 1_000_000,
+            wb_min_k: 1000,
+            wb_max_k: 10000,
+            wb_tint_min_x100: -150,
+            wb_tint_max_x100: 150,
+            stabilization_modes: STABILIZATION_OFF | STABILIZATION_STANDARD,
+        };
+        let expected_image_caps = vec![
+            0x05, 0x00, // torche + zoom
+            0xE8, 0x03, // zoom max 10×
+            0x19, 0x00, // ISO min 25
+            0x80, 0x0C, // ISO max 3200
+            0x64, 0x00, 0x00, 0x00, // durée min 100 µs
+            0x40, 0x42, 0x0F, 0x00, // durée max 1 s
+            0xE8, 0x03, // 1000 K
+            0x10, 0x27, // 10000 K
+            0x6A, 0xFF, // teinte min -1.50
+            0x96, 0x00, // teinte max +1.50
+            0x03, // arrêt + standard
+        ];
+        assert_eq!(image_caps.encode(), expected_image_caps);
     }
 }

@@ -108,6 +108,45 @@ Le producteur lit `consumer_active`/`consumer_*` à chaque publication et :
    sans erreur.
 5. À la fermeture : `consumer_active=0`.
 
+## Contrôles d'image exposés aux clients (`Global\WclControls`)
+
+Un **second mapping**, séparé de `Global\WclShm` : une DLL d'une version antérieure ne le crée pas, la
+vidéo continue de fonctionner et l'agent se contente de ne pas refléter les demandes des clients. Créé
+par la DLL (session 0, mêmes droits que `WclShm`), ouvert par l'agent.
+
+Structure à plat (`wcl::ControlsBlock` en C++, `ControlsBlock` en Rust), uniquement des `u32`/`i32`,
+donc aucun remplissage :
+
+| Champ | Écrit par | Notes |
+|---|---|---|
+| `version`, `size` | DLL | 1, et la taille de la structure |
+| `client_generation` | DLL | incrémenté à chaque demande d'un client |
+| `applied_generation` | agent | dernière génération reprise (acquittement) |
+| `flags` | DLL | bit0 auto exposition, bit1 auto balance, bit2 auto focus |
+| `zoom_x100`, `exposure_bias_ev_x100`, `iso`, `exposure_us`, `white_balance_k`, `focus_x100` | DLL | demande courante |
+| `range_valid`, `zoom_max_x100`, `iso_min`/`iso_max`, `exposure_min_us`/`exposure_max_us`, `wb_min_k`/`wb_max_k` | agent | plages du dernier `ImageCaps` |
+| `applied_flags`, `applied_zoom_x100`, `applied_exposure_bias_ev_x100`, `applied_iso`, `applied_exposure_us`, `applied_white_balance_k`, `applied_focus_x100`, `applied_available` | agent | relues par les GET des clients |
+
+Boucle complète : une application cliente (OBS, réglages caméra de Windows) écrit une valeur via
+`IKsControl` → la DLL la dépose dans le bloc et incrémente `client_generation` → l'agent la traduit dans
+`config.ini` (section `[image]`) → le chemin « à chaud » existant l'envoie à l'iPhone → l'agent publie
+`applied_*` puis `applied_generation`.
+
+Propriétés exposées (`PROPSETID_VIDCAP_VIDEOPROCAMP` et `PROPSETID_VIDCAP_CAMERACONTROL`) :
+
+| Set | Id | ↔ |
+|---|---|---|
+| CameraControl | 3 `Zoom` | `zoom_x100` |
+| CameraControl | 4 `Exposure` | `exposure_us` + drapeau auto |
+| CameraControl | 6 `Focus` | `focus_x100` + drapeau auto |
+| VideoProcAmp | 9 `Gain` | `iso` + drapeau auto d'exposition |
+| VideoProcAmp | 7 `WhiteBalance` | `white_balance_k` + drapeau auto |
+
+Une propriété inconnue répond `ERROR_SET_NOT_FOUND` : c'est ce que les clients interprètent comme « pas
+de contrôle », et ils grisent le curseur correspondant. `BASICSUPPORT` renvoie une description sans
+liste de bornes — la structure de membres de KS porte un pointeur, inutilisable entre processus — donc
+les clients utilisent leurs bornes par défaut ; la caméra re-borne de toute façon à l'application.
+
 ## Placeholder
 
 La DLL génère elle-même l'image « en attente » (dégradé sombre + bandeau) — inutile de faire

@@ -5,8 +5,8 @@
 //! events.
 
 use crate::protocol::{
-    self, Caps, Frame, FrameDecoder, Hello, MessageType, ProtocolError, SetCamera, SetFormat,
-    SetImage, SetOptions, Status, VideoConfig, VideoFrame,
+    self, Caps, Frame, FrameDecoder, Hello, ImageCaps, MessageType, ProtocolError, SetCamera,
+    SetFormat, SetImage, SetOptions, Status, VideoConfig, VideoFrame,
 };
 use crate::usbmux;
 use anyhow::{bail, Result};
@@ -22,6 +22,7 @@ const READ_CHUNK: usize = 256 * 1024;
 pub enum Event {
     Hello(Hello),
     Caps(Caps),
+    ImageCaps(ImageCaps),
     VideoConfig(VideoConfig),
     VideoFrame(VideoFrame),
     Status(Status),
@@ -34,6 +35,7 @@ impl Event {
         Ok(match frame.message_type {
             MessageType::Hello => Self::Hello(Hello::decode(&frame.payload)?),
             MessageType::Caps => Self::Caps(Caps::decode(&frame.payload)?),
+            MessageType::ImageCaps => Self::ImageCaps(ImageCaps::decode(&frame.payload)?),
             MessageType::VideoConfig => Self::VideoConfig(VideoConfig::decode(&frame.payload)?),
             MessageType::VideoFrame => Self::VideoFrame(VideoFrame::decode(&frame.payload)?),
             MessageType::Status => Self::Status(Status::decode(&frame.payload)?),
@@ -79,6 +81,9 @@ pub struct Session {
     pending: VecDeque<Frame>,
     pub hello: Hello,
     pub caps: Option<Caps>,
+    /// Ranges of the selected camera; `None` with a device that predates the
+    /// message, or before it answers a `SetCamera`.
+    pub image_caps: Option<ImageCaps>,
 }
 
 impl Session {
@@ -103,6 +108,7 @@ impl Session {
             pending: VecDeque::new(),
             hello: Hello::default(),
             caps: None,
+            image_caps: None,
         })
     }
 
@@ -150,6 +156,26 @@ impl Session {
                 }
                 Some(other) => log::debug!("message ignoré en attendant Caps: {other:?}"),
                 None => return Err(SessionError::Protocol(anyhow::anyhow!("pas de Caps reçu"))),
+            }
+        }
+    }
+
+    /// Wait for the device `ImageCaps` (the ranges of the selected camera).
+    /// Returns `None` when the device does not announce them: an older iPhone
+    /// stays usable, just without the pro controls.
+    pub fn wait_image_caps(&mut self, within: Duration) -> Result<Option<ImageCaps>, SessionError> {
+        if let Some(caps) = &self.image_caps {
+            return Ok(Some(*caps));
+        }
+        let deadline = Instant::now() + within;
+        loop {
+            match self.next_event_until(deadline)? {
+                Some(Event::ImageCaps(caps)) => {
+                    self.image_caps = Some(caps);
+                    return Ok(Some(caps));
+                }
+                Some(other) => log::debug!("message ignoré en attendant ImageCaps: {other:?}"),
+                None => return Ok(self.image_caps),
             }
         }
     }
