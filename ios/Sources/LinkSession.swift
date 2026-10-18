@@ -120,6 +120,12 @@ final class LinkSession {
         return WclCaps(cameras: cameras, codecs: WclCapsCodec.h264)
     }
 
+    /// Ranges of the selected camera. Re-sent after every `SetCamera`, because
+    /// they describe that camera and not the device as a whole.
+    func describeImageCaps() -> WclImageCaps {
+        cameras.first { $0.cameraId == selectedCameraId }?.imageCaps ?? WclImageCaps()
+    }
+
     // MARK: - Incoming commands
 
     func handle(frame: WclFrame) {
@@ -143,6 +149,7 @@ final class LinkSession {
             }
             selectedCameraId = command.cameraId
             log("SetCamera(\(command.cameraId))")
+            send(WclFrame(type: .imageCaps, payload: describeImageCaps().encoded()))
 
         case .setFormat:
             guard let requested = WclSetFormat.decode(frame.payload) else {
@@ -164,8 +171,20 @@ final class LinkSession {
 
         case .setImage:
             image = image.updated(with: frame.payload)
-            camera.apply(image: image)
-            log("SetImage(zoom \(image.zoomX100)%, torche \(image.torch))")
+            do {
+                try camera.apply(image: image)
+                log(
+                    "SetImage: zoom \(image.zoomX100)%, expo mode \(image.exposureMode) "
+                    + "(biais \(image.exposureBiasEvX100), ISO \(image.iso), \(image.exposureDurationUs) µs), "
+                    + "focus mode \(image.focusMode) (\(image.focusXX10000), \(image.focusYX10000)), "
+                    + "WB mode \(image.whiteBalanceMode) \(image.whiteBalanceTempK) K "
+                    + "teinte \(image.whiteBalanceTintX100), torche \(image.torch) \(image.torchLevel)%"
+                )
+            } catch {
+                // A camera that cannot do the requested mode is the PC's problem
+                // to report: it knows what it asked for.
+                sendError(.imageUnsupported, message: "\(error)")
+            }
 
         case .start:
             start()
@@ -198,6 +217,7 @@ final class LinkSession {
         )
         send(WclFrame(type: .hello, payload: hello.encoded()))
         send(WclFrame(type: .caps, payload: describeCaps().encoded()))
+        send(WclFrame(type: .imageCaps, payload: describeImageCaps().encoded()))
     }
 
     // MARK: - Streaming
@@ -228,7 +248,13 @@ final class LinkSession {
 
         do {
             try camera.configure(descriptor: descriptor, width: width, height: height, fps: fps, mirror: options.mirror)
-            camera.apply(image: image)
+            do {
+                try camera.apply(image: image)
+            } catch {
+                // An unsupported image mode must not keep the stream from
+                // starting: tell the PC, keep the rest of the settings.
+                sendError(.imageUnsupported, message: "\(error)")
+            }
         } catch {
             sendError(.invalidFormat, message: "\(error)")
             return

@@ -413,6 +413,24 @@ fn main() -> Result<()> {
                 break 'main;
             }
             Ok(Some(Event::Heartbeat(_))) => {}
+            Ok(Some(Event::ImageCaps(caps))) => {
+                println!(
+                    "ImageCaps: flags {:#06x}, zoom max {}.{:02}×, ISO {}–{}, durée {}–{} µs, \
+                     balance {}–{} K teinte {}–{}, stabilisation {:#04x}",
+                    caps.flags,
+                    caps.zoom_max_x100 / 100,
+                    caps.zoom_max_x100 % 100,
+                    caps.iso_min,
+                    caps.iso_max,
+                    caps.exposure_min_us,
+                    caps.exposure_max_us,
+                    caps.wb_min_k,
+                    caps.wb_max_k,
+                    caps.wb_tint_min_x100,
+                    caps.wb_tint_max_x100,
+                    caps.stabilization_modes,
+                );
+            }
             Ok(Some(Event::Hello(_)) | Some(Event::Caps(_))) => {}
             Ok(None) => {}
             Err(SessionError::Timeout) => {}
