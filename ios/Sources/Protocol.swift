@@ -78,35 +78,50 @@ struct WclFrame {
     }
 }
 
+/// Incremental WCLN frame decoder.
+///
+/// Deliberately uses a byte array with an explicit offset instead of `Data`
+/// indices: after a `Data.removeFirst`, indices are not guaranteed to restart
+/// at 0, and mixing them with `subdata(in:)` traps on the second frame.
 final class WclFrameReader {
-    private var buffer = Data()
+    private var buffer: [UInt8] = []
 
     func append(_ data: Data) -> [WclFrame] {
-        buffer.append(data)
+        buffer.append(contentsOf: data)
         var frames: [WclFrame] = []
-        while buffer.count >= WclProtocol.headerSize {
-            let header = [UInt8](buffer.prefix(WclProtocol.headerSize))
-            guard Array(header[0..<4]) == WclProtocol.magic, header[4] == WclProtocol.version else {
+        var offset = 0
+
+        while buffer.count - offset >= WclProtocol.headerSize {
+            let magic = WclProtocol.magic
+            guard buffer[offset] == magic[0],
+                  buffer[offset + 1] == magic[1],
+                  buffer[offset + 2] == magic[2],
+                  buffer[offset + 3] == magic[3],
+                  buffer[offset + 4] == WclProtocol.version else {
                 buffer.removeAll()
-                break
+                return frames
             }
-            let typeRaw = header[5]
-            let flags = UInt16(header[6]) | (UInt16(header[7]) << 8)
-            let length = UInt32(header[8])
-                | (UInt32(header[9]) << 8)
-                | (UInt32(header[10]) << 16)
-                | (UInt32(header[11]) << 24)
+            let typeRaw = buffer[offset + 5]
+            let flags = UInt16(buffer[offset + 6]) | (UInt16(buffer[offset + 7]) << 8)
+            let length = UInt32(buffer[offset + 8])
+                | (UInt32(buffer[offset + 9]) << 8)
+                | (UInt32(buffer[offset + 10]) << 16)
+                | (UInt32(buffer[offset + 11]) << 24)
             guard length <= UInt32(WclProtocol.maxPayload) else {
                 buffer.removeAll()
-                break
+                return frames
             }
             let total = WclProtocol.headerSize + Int(length)
-            guard buffer.count >= total else { break }
-            let payload = buffer.subdata(in: WclProtocol.headerSize..<total)
-            buffer.removeFirst(total)
+            guard buffer.count - offset >= total else { break }
+            let payload = Data(buffer[(offset + WclProtocol.headerSize)..<(offset + total)])
+            offset += total
             if let type = WclMessageType(rawValue: typeRaw) {
                 frames.append(WclFrame(type: type, flags: flags, payload: payload))
             }
+        }
+
+        if offset > 0 {
+            buffer.removeFirst(offset)
         }
         return frames
     }

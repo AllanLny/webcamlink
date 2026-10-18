@@ -28,10 +28,10 @@ final class LinkServer: ObservableObject {
     private var cameras: [WclCameraDescriptor] = []
     private var usedFallbackBinding = false
 
-    private static let timeFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "HH:mm:ss.SSS"
-        return formatter
+    /// Log file in Documents — survives a crash, unlike the in-app journal.
+    private let logFileURL: URL? = {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("webcamlink.log")
     }()
 
     private init() {}
@@ -250,12 +250,33 @@ final class LinkServer: ObservableObject {
     // MARK: - Utilities
 
     func log(_ message: String) {
-        let stamp = Self.timeFormatter.string(from: Date())
+        // A DateFormatter is not thread-safe: create one per call (cheap at our rate).
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss.SSS"
+        let stamp = formatter.string(from: Date())
+        let line = "[\(stamp)] \(message)"
+        appendToLogFile(line)
         publish {
-            self.logLines.append("[\(stamp)] \(message)")
+            self.logLines.append(line)
             if self.logLines.count > 400 {
                 self.logLines.removeFirst(self.logLines.count - 400)
             }
+        }
+    }
+
+    private func appendToLogFile(_ line: String) {
+        guard let url = logFileURL else { return }
+        let data = Data((line + "\n").utf8)
+        let size = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? Int ?? 0
+        if size > 200_000 {
+            try? FileManager.default.removeItem(at: url)
+        }
+        if let handle = try? FileHandle(forWritingTo: url) {
+            handle.seekToEndOfFile()
+            handle.write(data)
+            try? handle.close()
+        } else {
+            try? data.write(to: url)
         }
     }
 
