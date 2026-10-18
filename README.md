@@ -61,7 +61,7 @@ iPhone (app WebcamLink)                        PC (Windows 11 x64)
 
 | Outil | Version / composant |
 |---|---|
-| Visual Studio **Build Tools 2022** | charge de travail « Développement Desktop en C++ » (MSVC v143 + Windows SDK) |
+| Visual Studio **2022 ou plus récent** | charge de travail « Développement Desktop en C++ » (MSVC v143+ + Windows SDK) — les Build Tools suffisent |
 | Windows SDK | 10.0.22000 ou plus récent (le projet est compilé avec 10.0.26100) |
 | CMake | ≥ 3.20 (fourni avec les Build Tools) |
 | Rust | toolchain **stable**, cible MSVC (`rustup default stable-msvc`) |
@@ -79,9 +79,11 @@ iPhone (app WebcamLink)                        PC (Windows 11 x64)
 1. **Compiler** (depuis la racine du dépôt) :
    ```powershell
    cargo build --release --manifest-path pc/agent/Cargo.toml
-   cmake -S pc/vcam -B pc/vcam/build -G "Visual Studio 17 2022" -A x64
+   cmake -S pc/vcam -B pc/vcam/build -A x64
    cmake --build pc/vcam/build --config Release
    ```
+   CMake choisit le Visual Studio installé ; pour en forcer un (plusieurs versions côte à côte),
+   ajoute par exemple `-G "Visual Studio 17 2022"`.
 
 2. **Enregistrer la caméra virtuelle** (shell **administrateur**, une seule fois) :
    ```powershell

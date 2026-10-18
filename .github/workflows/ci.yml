@@ -18,7 +18,7 @@ jobs:
     name: Agent et caméra virtuelle (Windows)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Toolchain Rust
         uses: dtolnay/rust-toolchain@stable
@@ -32,16 +32,18 @@ jobs:
         working-directory: pc/agent
         run: cargo test --release --locked
 
+      # Pas de -G : l'image du runner embarque la version courante de Visual
+      # Studio (2026 aujourd'hui), et CMake choisit tout seul la bonne.
       - name: Compilation de la caméra virtuelle
         run: |
-          cmake -S pc/vcam -B pc/vcam/build -G "Visual Studio 17 2022" -A x64
+          cmake -S pc/vcam -B pc/vcam/build -A x64
           cmake --build pc/vcam/build --config Release
 
   ios:
     name: App iOS (compilation non signée)
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Installer XcodeGen
         run: brew install xcodegen

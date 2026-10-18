@@ -17,7 +17,7 @@ les bienvenus. Ce guide résume ce qu'il faut savoir pour qu'une contribution pa
 git clone https://github.com/AllanLny/webcamlink.git
 cd webcamlink
 cargo test --release --manifest-path pc/agent/Cargo.toml
-cmake -S pc/vcam -B pc/vcam/build -G "Visual Studio 17 2022" -A x64
+cmake -S pc/vcam -B pc/vcam/build -A x64
 cmake --build pc/vcam/build --config Release
 ```
 
