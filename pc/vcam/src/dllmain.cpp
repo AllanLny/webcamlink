@@ -8,8 +8,10 @@
 
 #include <atomic>
 #include <cstdio>
+#include <string>
 
 #include "../include/wcl_shm.h"
+#include "config.h"
 #include "virtual_camera.h"
 
 using Microsoft::WRL::ComPtr;
@@ -23,23 +25,43 @@ namespace {
 std::atomic<LONG> g_server_locks{0};
 std::atomic<bool> g_mf_started{false};
 
-/// Debug log in %TEMP%\webcamlink-vcam.log: the DLL runs inside the Frame
-/// Server, so a file is the only way to see what happens.
-void Log(const wchar_t* message) {
-    wchar_t path[MAX_PATH]{};
-    DWORD length = GetTempPathW(MAX_PATH, path);
-    if (length == 0) {
-        return;
+/// Opens the log file. The DLL runs inside the Frame Server (session 0), so a
+/// file is the only observable output — and it has to be readable from the user
+/// session, hence ProgramData first and the process temp directory as fallback.
+FILE* OpenLog() {
+    const std::wstring directory = wcl::WebcamLinkDataDirectory();
+    if (!directory.empty()) {
+        CreateDirectoryW(directory.c_str(), nullptr);
+        const std::wstring path = directory + L"\\vcam.log";
+        FILE* file = nullptr;
+        if (_wfopen_s(&file, path.c_str(), L"a") == 0 && file) {
+            return file;
+        }
     }
-    wcscat_s(path, L"webcamlink-vcam.log");
+
+    wchar_t fallback[MAX_PATH]{};
+    if (GetTempPathW(MAX_PATH, fallback) == 0) {
+        return nullptr;
+    }
+    wcscat_s(fallback, L"webcamlink-vcam.log");
     FILE* file = nullptr;
-    if (_wfopen_s(&file, path, L"a") != 0 || !file) {
+    if (_wfopen_s(&file, fallback, L"a") != 0 || !file) {
+        return nullptr;
+    }
+    return file;
+}
+
+void Log(const wchar_t* message) {
+    FILE* file = OpenLog();
+    if (!file) {
         return;
     }
     SYSTEMTIME now{};
     GetLocalTime(&now);
-    fwprintf(file, L"[%02d:%02d:%02d.%03d] %s\n", now.wHour, now.wMinute, now.wSecond,
-             now.wMilliseconds, message);
+    // The process id tells the registering process (session 3) apart from the
+    // Frame Server (session 0), both of which log to the same file.
+    fwprintf(file, L"[%02d:%02d:%02d.%03d %lu] %s\n", now.wHour, now.wMinute, now.wSecond,
+             now.wMilliseconds, GetCurrentProcessId(), message);
     fclose(file);
 }
 

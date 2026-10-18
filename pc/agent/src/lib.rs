@@ -3,6 +3,7 @@
 
 pub mod clip;
 pub mod color;
+pub mod config;
 pub mod h264;
 pub mod protocol;
 pub mod session;

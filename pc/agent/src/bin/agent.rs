@@ -7,9 +7,13 @@
 
 use anyhow::{bail, Context, Result};
 use std::time::{Duration, Instant};
+use wcl_agent::config::{CameraPreference, Settings};
 use wcl_agent::decode::H264Decoder;
 use wcl_agent::mf::MediaFoundation;
-use wcl_agent::protocol::{Caps, ProtocolError, SetFormat, SetOptions, CODEC_H264};
+use wcl_agent::protocol::{
+    Caps, Camera, ProtocolError, SetFormat, SetOptions, CODEC_H264, LENS_TELE, LENS_ULTRA_WIDE,
+    LENS_WIDE, POSITION_FRONT,
+};
 use wcl_agent::session::{Event, Session, SessionError};
 use wcl_agent::shm::{
     Control, ShmBlock, ShmNames, PRODUCER_ERROR, PRODUCER_STOPPED, PRODUCER_STREAMING,
@@ -21,7 +25,7 @@ struct Options {
     camera: Option<u8>,
     format: Option<(u16, u16)>,
     fps: Option<u16>,
-    bitrate_kbps: u32,
+    bitrate_kbps: Option<u32>,
 }
 
 fn parse_options() -> Result<Options> {
@@ -31,7 +35,7 @@ fn parse_options() -> Result<Options> {
         camera: None,
         format: None,
         fps: None,
-        bitrate_kbps: 20_000,
+        bitrate_kbps: None,
     };
     let mut arguments = std::env::args().skip(1);
     while let Some(argument) = arguments.next() {
@@ -46,7 +50,10 @@ fn parse_options() -> Result<Options> {
                 options.format = Some((width.parse()?, height.parse()?));
             }
             "--fps" => options.fps = Some(arguments.next().context("--fps attend un nombre")?.parse()?),
-            "--bitrate" => options.bitrate_kbps = arguments.next().context("--bitrate attend des kbps")?.parse()?,
+            "--bitrate" => {
+                options.bitrate_kbps =
+                    Some(arguments.next().context("--bitrate attend des kbps")?.parse()?)
+            }
             "--help" | "-h" => {
                 println!(
                     "wcl-agent [--usb | --tcp host:port] [--port 5321] [--camera N] [--format WxH] [--fps N] [--bitrate K]"
@@ -97,7 +104,10 @@ fn main() -> Result<()> {
                     if control.consumer_active {
                         idle_since = None;
                         if session.is_none() && retry_at.is_none_or(|at| Instant::now() >= at) {
-                            match start_stream(&options, &control) {
+                            // Relus à chaque ouverture : les réglages changent
+                            // sans redémarrer l'agent.
+                            let settings = Settings::load();
+                            match start_stream(&options, &control, &settings) {
                                 Ok((mut new_session, new_decoder)) => {
                                     log::info!(
                                         "flux démarré pour la webcam (demande {}x{}@{} fps)",
@@ -224,7 +234,11 @@ fn main() -> Result<()> {
     }
 }
 
-fn start_stream(options: &Options, control: &Control) -> Result<(Session, H264Decoder)> {
+fn start_stream(
+    options: &Options,
+    control: &Control,
+    settings: &Settings,
+) -> Result<(Session, H264Decoder)> {
     let mut session = match &options.tcp {
         Some(address) => Session::connect_tcp(address)?,
         None => Session::connect_usb(options.port)?,
@@ -239,31 +253,70 @@ fn start_stream(options: &Options, control: &Control) -> Result<(Session, H264De
         bail!("l'iPhone n'annonce pas H.264");
     }
 
-    let (camera_id, (width, height), fps) = choose(&caps, options, control)?;
-    session.set_camera(camera_id)?;
-    session.set_options(SetOptions { mirror: false, rotation: 0, dim_preview: true })?;
-    session.set_format(SetFormat {
-        width,
-        height,
-        fps,
-        codec: CODEC_H264,
-        bitrate_kbps: options.bitrate_kbps,
-    })?;
+    let camera = resolve_camera(&caps, options, settings)?;
+    let (width, height, fps) = choose_format(camera, options, control, settings)?;
+    let bitrate_kbps = options.bitrate_kbps.unwrap_or(settings.bitrate_kbps);
+    session.set_camera(camera.camera_id)?;
+    session.set_options(SetOptions { mirror: settings.mirror, rotation: 0, dim_preview: true })?;
+    session.set_format(SetFormat { width, height, fps, codec: CODEC_H264, bitrate_kbps })?;
     session.start()?;
-    log::info!("session iPhone: caméra {camera_id}, {width}x{height} @ {fps} fps");
+    log::info!(
+        "session iPhone: caméra {} ({}) {width}x{height} @ {fps} fps, {bitrate_kbps} kbps, miroir {}",
+        camera.camera_id,
+        camera.label,
+        if settings.mirror { "oui" } else { "non" }
+    );
 
     Ok((session, H264Decoder::new(false)?))
 }
 
-fn choose(caps: &Caps, options: &Options, control: &Control) -> Result<(u8, (u16, u16), u16)> {
-    let camera = match options.camera {
-        Some(id) if caps.cameras.iter().any(|camera| camera.camera_id == id) => {
-            caps.cameras.iter().find(|camera| camera.camera_id == id).unwrap()
-        }
-        Some(id) => bail!("caméra {id} absente de Caps"),
-        None => caps.cameras.first().context("Caps ne contient aucune caméra")?,
-    };
+/// Caméra à utiliser : `--camera` est prioritaire, sinon la préférence des
+/// réglages est résolue contre les capacités annoncées par l'iPhone.
+fn resolve_camera<'a>(
+    caps: &'a Caps,
+    options: &Options,
+    settings: &Settings,
+) -> Result<&'a Camera> {
+    if let Some(id) = options.camera {
+        return caps
+            .cameras
+            .iter()
+            .find(|camera| camera.camera_id == id)
+            .with_context(|| format!("caméra {id} absente de Caps"));
+    }
 
+    if settings.preference == CameraPreference::Auto {
+        return caps.cameras.first().context("Caps ne contient aucune caméra");
+    }
+
+    let front = settings.preference == CameraPreference::Front;
+    let wanted_lens = match settings.preference {
+        CameraPreference::BackWide => Some(LENS_WIDE),
+        CameraPreference::BackUltraWide => Some(LENS_ULTRA_WIDE),
+        CameraPreference::BackTele => Some(LENS_TELE),
+        _ => None,
+    };
+    caps.cameras
+        .iter()
+        .find(|camera| {
+            if front {
+                camera.position == POSITION_FRONT || camera.lens == wcl_agent::protocol::LENS_FRONT
+            } else {
+                camera.position != POSITION_FRONT
+                    && wanted_lens.is_none_or(|lens| camera.lens == lens)
+            }
+        })
+        .with_context(|| {
+            format!("aucune caméra ne correspond à la préférence {}", settings.preference)
+        })
+}
+
+fn choose_format(
+    camera: &Camera,
+    options: &Options,
+    control: &Control,
+    settings: &Settings,
+) -> Result<(u16, u16, u16)> {
     let requested = options.format.or_else(|| {
         if control.width >= 160 && control.height >= 120 {
             Some((control.width as u16, control.height as u16))
@@ -302,9 +355,9 @@ fn choose(caps: &Caps, options: &Options, control: &Control) -> Result<(u8, (u16
     let wanted_fps = options
         .fps
         .or_else(|| if control.fps > 0 { Some(control.fps as u16) } else { None })
-        .unwrap_or(30);
+        .unwrap_or(if settings.fps > 0 { settings.fps as u16 } else { 30 });
     let fps = u32::from(wanted_fps).min(u32::from(format.max_fps)).max(1);
-    Ok((camera.camera_id, (format.width, format.height), fps as u16))
+    Ok((format.width, format.height, fps as u16))
 }
 
 fn report_error(error: &ProtocolError) {

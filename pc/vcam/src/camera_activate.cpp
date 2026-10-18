@@ -10,6 +10,7 @@
 
 #include <cstdio>
 
+#include "logging_attributes.h"
 #include "virtual_camera.h"
 
 using Microsoft::WRL::ClassicCom;
@@ -23,17 +24,20 @@ namespace {
 class CameraActivate : public RuntimeClass<RuntimeClassFlags<ClassicCom>, IMFActivate> {
 public:
     CameraActivate() {
-        MFCreateAttributes(&store_, 8);
-        // The Frame Server reads the associated-camera keys before anything
-        // else and gives up with MF_E_ATTRIBUTENOTFOUND when they are missing.
-        IMFCollection* empty = nullptr;
-        if (SUCCEEDED(MFCreateCollection(&empty)) && empty) {
-            store_->SetUnknown(wcl::kAssociatedCameraSources, empty);
-            empty->Release();
+        // Logging store: every lookup the Frame Server makes on the activate is
+        // visible in the log, successful ones included.
+        auto store = Make<wcl::LoggingAttributes>(L"activate-store");
+        if (!store || !store->Store()) {
+            return;
         }
-        store_->SetUINT32(wcl::kProvideAssociatedCameraSources, TRUE);
-        store_->SetUINT32(wcl::kEnableMsCameraEffects, FALSE);
-        store_->SetString(MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME, L"WebcamLink");
+        IMFAttributes* raw = store->Store();
+        raw->SetUINT32(wcl::kEnableMsCameraEffects, FALSE);
+        raw->SetString(MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME, L"WebcamLink");
+        // The pipeline checks for the configuration-app package family name as
+        // soon as the activate is created, so it is answered here rather than
+        // left to be injected later.
+        raw->SetString(wcl::kConfigurationAppPackageFamilyName, wcl::kConfigurationAppName);
+        store_ = store;
     }
 
     // IMFActivate
@@ -50,7 +54,7 @@ public:
 
         if (!source_) {
             ComPtr<IUnknown> created;
-            HRESULT hr = wcl::CreateVirtualCamera(&created);
+            HRESULT hr = wcl::CreateVirtualCamera(store_.Get(), &created);
             if (FAILED(hr)) {
                 wcl::LogLine(L"CreateVirtualCamera a échoué");
                 return hr;
@@ -94,16 +98,7 @@ public:
         return store_->Compare(theirs, match, result);
     }
     STDMETHODIMP GetUINT32(REFGUID key, UINT32* value) override {
-        HRESULT hr = store_->GetUINT32(key, value);
-        if (FAILED(hr)) {
-            wchar_t guid[64]{};
-            StringFromGUID2(key, guid, 64);
-            wchar_t line[192];
-            swprintf_s(line, L"activate::GetUINT32(%s) -> 0x%08lX", guid,
-                       static_cast<unsigned long>(hr));
-            wcl::LogLine(line);
-        }
-        return hr;
+        return store_->GetUINT32(key, value);
     }
     STDMETHODIMP GetUINT64(REFGUID key, UINT64* value) override {
         return store_->GetUINT64(key, value);
@@ -112,16 +107,7 @@ public:
         return store_->GetDouble(key, value);
     }
     STDMETHODIMP GetGUID(REFGUID key, GUID* value) override {
-        HRESULT hr = store_->GetGUID(key, value);
-        if (FAILED(hr)) {
-            wchar_t guid[64]{};
-            StringFromGUID2(key, guid, 64);
-            wchar_t line[192];
-            swprintf_s(line, L"activate::GetGUID(%s) -> 0x%08lX", guid,
-                       static_cast<unsigned long>(hr));
-            wcl::LogLine(line);
-        }
-        return hr;
+        return store_->GetGUID(key, value);
     }
     STDMETHODIMP GetStringLength(REFGUID key, UINT32* length) override {
         return store_->GetStringLength(key, length);
@@ -142,16 +128,7 @@ public:
         return store_->GetAllocatedBlob(key, buffer, size);
     }
     STDMETHODIMP GetUnknown(REFGUID key, REFIID riid, LPVOID* value) override {
-        HRESULT hr = store_->GetUnknown(key, riid, value);
-        if (FAILED(hr)) {
-            wchar_t guid[64]{};
-            StringFromGUID2(key, guid, 64);
-            wchar_t line[192];
-            swprintf_s(line, L"activate::GetUnknown(%s) -> 0x%08lX", guid,
-                       static_cast<unsigned long>(hr));
-            wcl::LogLine(line);
-        }
-        return hr;
+        return store_->GetUnknown(key, riid, value);
     }
     STDMETHODIMP SetItem(REFGUID key, REFPROPVARIANT value) override {
         return store_->SetItem(key, value);
@@ -190,7 +167,7 @@ public:
     }
 
 private:
-    ComPtr<IMFAttributes> store_;
+    ComPtr<wcl::LoggingAttributes> store_;
     ComPtr<IUnknown> source_;
 };
 

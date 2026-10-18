@@ -3,20 +3,19 @@
 // Requires an elevated process.
 #include <windows.h>
 
+#include <aclapi.h>
 #include <mfapi.h>
 #include <mfidl.h>
 #include <mfvirtualcamera.h>
+#include <sddl.h>
 
 #include <cstdio>
 #include <string>
 
 #include "../include/wcl_shm.h"
+#include "../src/virtual_camera.h"
 
 namespace {
-
-// KSCATEGORY_VIDEO_CAMERA, so the camera shows up for Windows Camera, Teams...
-const GUID kVideoCameraCategory = {
-    0xe5323777, 0xf976, 0x4f5b, {0x9b, 0x55, 0xb9, 0x46, 0x99, 0xc4, 0x6e, 0x44}};
 
 const wchar_t* kClsidString = L"{B7C0E1F2-3A4D-4E5F-9A6B-1C2D3E4F5A6B}";
 const wchar_t* kFriendlyName = L"WebcamLink";
@@ -85,6 +84,33 @@ void UnregisterComServer() {
     RegDeleteTreeW(HKEY_LOCAL_MACHINE, clsid_key.c_str());
 }
 
+/// Creates %ProgramData%\WebcamLink, writable by the Frame Server (LOCAL
+/// SERVICE, session 0) and readable by the user: that is where the DLL logs.
+void PrepareLogDirectory() {
+    wchar_t folder[MAX_PATH]{};
+    if (GetEnvironmentVariableW(L"ProgramData", folder, MAX_PATH) == 0) {
+        return;
+    }
+    wcscat_s(folder, L"\\WebcamLink");
+    CreateDirectoryW(folder, nullptr);
+
+    PSECURITY_DESCRIPTOR allocated = nullptr;
+    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            L"D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;LS)(A;OICI;GRGW;;;BU)", SDDL_REVISION_1,
+            &allocated, nullptr)) {
+        return;
+    }
+    SetFileSecurityW(folder, DACL_SECURITY_INFORMATION, allocated);
+    // The log file itself keeps the permissions it was created with, so the
+    // same DACL is applied to it: without that the Frame Server (LOCAL SERVICE)
+    // cannot write its lines.
+    wchar_t log[MAX_PATH]{};
+    wcscpy_s(log, folder);
+    wcscat_s(log, L"\\vcam.log");
+    SetFileSecurityW(log, DACL_SECURITY_INFORMATION, allocated);
+    LocalFree(allocated);
+}
+
 int Register(bool enable) {
     if (!IsElevated()) {
         wprintf(L"Cette commande doit être lancée en administrateur.\n");
@@ -98,13 +124,20 @@ int Register(bool enable) {
     }
 
     IMFVirtualCamera* camera = nullptr;
+    // No category list, so the camera is registered under KSCATEGORY_VIDEO_CAMERA,
+    // KSCATEGORY_VIDEO and KSCATEGORY_CAPTURE; naming a single category leaves the
+    // Frame Server without the interfaces it enumerates.
     HRESULT hr = create(MFVirtualCameraType_SoftwareCameraSource, MFVirtualCameraLifetime_System,
-                        MFVirtualCameraAccess_AllUsers, kFriendlyName, kClsidString,
-                        &kVideoCameraCategory, 1, &camera);
+                        MFVirtualCameraAccess_AllUsers, kFriendlyName, kClsidString, nullptr, 0,
+                        &camera);
     if (FAILED(hr) || !camera) {
         wprintf(L"MFCreateVirtualCamera a échoué : 0x%08lX\n", static_cast<unsigned long>(hr));
         return 1;
     }
+
+    hr = camera->SetString(MF_VIRTUALCAMERA_CONFIGURATION_APP_PACKAGE_FAMILY_NAME,
+                           wcl::kConfigurationAppName);
+    wprintf(L"Configuration app PFN : 0x%08lX\n", static_cast<unsigned long>(hr));
 
     if (!enable) {
         hr = camera->Remove();
@@ -120,6 +153,7 @@ int Register(bool enable) {
         camera->Release();
         return 1;
     }
+    PrepareLogDirectory();
 
     hr = camera->Start(nullptr);
     wprintf(L"MFCreateVirtualCamera OK, Start : 0x%08lX\n", static_cast<unsigned long>(hr));

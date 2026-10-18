@@ -98,9 +98,14 @@ Le producteur lit `consumer_active`/`consumer_*` à chaque publication et :
 
 1. `OpenFileMapping` + `MapViewOfFile` (droits ci-dessus).
 2. Écrit `consumer_width/height/fps`, puis `consumer_active=1` et `consumer_generation += 1`.
-3. Attend `WclFrameReady` (timeout 100 ms), lit `latest_slot`, copie le slot (seqlock : relire
-   `sequence` avant/après ; abandonner si impair ou changé).
-4. Sans frame depuis > 1 s : renvoie une image de remplacement (dégradé sombre), sans erreur.
+   Ces valeurs viennent de `%ProgramData%\WebcamLink\config.ini` (`[video]`), lu par la DLL à la
+   création de la source : **un seul format est annoncé, figé jusqu'au prochain enregistrement de la
+   caméra** (redémarrage de Windows). L'agent s'aligne dessus (`SetFormat`).
+3. Attend `WclFrameReady` (timeout 0 : c'est le pipeline qui cadence), lit `latest_slot`, copie le
+   slot (seqlock : relire `sequence` avant/après ; abandonner si impair ou changé). Sans nouvelle
+   frame, la précédente est répétée.
+4. Tant qu'aucune frame n'a été reçue (première ouverture) : image de remplacement (dégradé sombre),
+   sans erreur.
 5. À la fermeture : `consumer_active=0`.
 
 ## Placeholder
