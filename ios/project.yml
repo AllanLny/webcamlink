@@ -18,8 +18,8 @@ targets:
       path: Support/Info.plist
       properties:
         CFBundleDisplayName: WebcamLink
-        CFBundleShortVersionString: "0.1.0"
-        CFBundleVersion: "1"
+        CFBundleShortVersionString: "0.1.1"
+        CFBundleVersion: "2"
         UILaunchScreen: {}
         UIApplicationSupportsIndirectInputEvents: true
         UISupportedInterfaceOrientations:
@@ -36,8 +36,8 @@ targets:
         PRODUCT_NAME: WebcamLink
         TARGETED_DEVICE_FAMILY: "1"
         GENERATE_INFOPLIST_FILE: NO
-        CURRENT_PROJECT_VERSION: 1
-        MARKETING_VERSION: 0.1.0
+        CURRENT_PROJECT_VERSION: 2
+        MARKETING_VERSION: 0.1.1
         CODE_SIGN_STYLE: Manual
         CODE_SIGNING_ALLOWED: NO
         SWIFT_STRICT_CONCURRENCY: minimal

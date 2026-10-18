@@ -34,12 +34,38 @@ final class LinkServer: ObservableObject {
             .appendingPathComponent("webcamlink.log")
     }()
 
-    private init() {}
+    private init() {
+        // iOS suspends the process in the background and the listener socket
+        // dies with it: recreate it whenever the app comes back to the
+        // foreground, otherwise the PC sees "nobody listens on 5321".
+        _ = NotificationCenter.default.addObserver(
+            forName: UIApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            self.queue.async { self.ensureListening() }
+        }
+    }
 
     // MARK: - Lifecycle
 
     func start() {
-        queue.async { self.startOnQueue() }
+        queue.async { self.ensureListening() }
+    }
+
+    /// (Re)creates the listener if it is missing or dead.
+    private func ensureListening() {
+        if listener != nil, isListening {
+            return
+        }
+        if let existing = listener {
+            log("Listener inactif — recréation")
+            existing.cancel()
+            listener = nil
+        }
+        publish { self.isListening = false }
+        startOnQueue()
     }
 
     func stop() {

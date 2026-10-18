@@ -99,7 +99,8 @@ final class LinkSession {
         ) { [weak self] _ in
             guard let self else { return }
             self.queue.async {
-                guard self.streaming else { return }
+                // Tell the PC even when idle: the listener is about to be
+                // suspended, so the next Connect will be refused anyway.
                 self.sendError(.notInForeground, message: "l'app iPhone est passée en arrière-plan")
                 self.stop(reason: "arrière-plan")
             }
