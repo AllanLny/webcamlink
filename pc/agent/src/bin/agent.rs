@@ -16,7 +16,9 @@ use wcl_agent::protocol::{
 };
 use wcl_agent::session::{Event, Session, SessionError};
 use wcl_agent::shm::{
-    Control, ShmBlock, ShmNames, PRODUCER_ERROR, PRODUCER_STOPPED, PRODUCER_STREAMING,
+    AppliedControls, Control, ControlsMapping, ShmBlock, ShmNames, CONTROLS_FLAG_AUTO_EXPOSURE,
+    CONTROLS_FLAG_AUTO_FOCUS, CONTROLS_FLAG_AUTO_WHITE_BALANCE, PRODUCER_ERROR, PRODUCER_STOPPED,
+    PRODUCER_STREAMING,
 };
 
 struct Options {
@@ -75,6 +77,7 @@ fn main() -> Result<()> {
     log::info!("wcl-agent démarré — en attente de la webcam virtuelle (mémoire partagée)");
 
     let mut shm: Option<ShmBlock> = None;
+    let mut controls: Option<ControlsMapping> = None;
     let mut session: Option<Session> = None;
     let mut decoder: Option<H264Decoder> = None;
     let mut last_tick = Instant::now();
@@ -87,6 +90,67 @@ fn main() -> Result<()> {
     loop {
         if last_tick.elapsed() >= Duration::from_millis(250) {
             last_tick = Instant::now();
+
+            // Contrôles pilotés par les applications clientes (OBS, réglages
+            // caméra de Windows) : la DLL y dépose leurs demandes. On les
+            // traduit dans config.ini, que le bloc « à chaud » plus bas envoie.
+            if controls.is_none() {
+                match ControlsMapping::open() {
+                    Ok(Some(mapping)) => {
+                        log::info!("contrôles clients disponibles (Global\\WclControls)");
+                        controls = Some(mapping);
+                    }
+                    Ok(None) => {}
+                    Err(error) => log::warn!("contrôles clients illisibles: {error:#}"),
+                }
+            }
+            if let Some(mapping) = controls.as_ref() {
+                let snapshot = mapping.snapshot();
+                if snapshot.client_generation != snapshot.applied_generation {
+                    let automatic_exposure = snapshot.flags & CONTROLS_FLAG_AUTO_EXPOSURE != 0;
+                    let automatic_balance =
+                        snapshot.flags & CONTROLS_FLAG_AUTO_WHITE_BALANCE != 0;
+                    let automatic_focus = snapshot.flags & CONTROLS_FLAG_AUTO_FOCUS != 0;
+
+                    let mut requested = Settings::load();
+                    requested.zoom_x100 = snapshot.zoom_x100.max(1);
+                    requested.exposure_mode = if automatic_exposure { 0 } else { 2 };
+                    if !automatic_exposure {
+                        if snapshot.iso > 0 {
+                            requested.iso = snapshot.iso.min(u32::from(u16::MAX)) as u16;
+                        }
+                        if snapshot.exposure_us > 0 {
+                            requested.exposure_duration_us = snapshot.exposure_us;
+                        }
+                    }
+                    requested.wb_mode = if automatic_balance { 0 } else { 2 };
+                    if !automatic_balance && snapshot.white_balance_k > 0 {
+                        requested.wb_temp_k =
+                            snapshot.white_balance_k.min(u32::from(u16::MAX)) as u16;
+                    }
+                    requested.focus_mode = if automatic_focus { 0 } else { 1 };
+                    if !automatic_focus {
+                        requested.focus_distance_x100 = snapshot.focus_x100.min(100) as u16;
+                    }
+
+                    match requested.save() {
+                        Ok(()) => log::info!(
+                            "réglages demandés par une application cliente repris dans config.ini"
+                        ),
+                        Err(error) => log::warn!("config.ini non écrit: {error}"),
+                    }
+                    mapping.publish_applied(&AppliedControls {
+                        generation: snapshot.client_generation,
+                        flags: snapshot.flags,
+                        zoom_x100: requested.zoom_x100,
+                        iso: u32::from(requested.iso),
+                        exposure_us: requested.exposure_duration_us,
+                        white_balance_k: u32::from(requested.wb_temp_k),
+                        focus_x100: u32::from(requested.focus_distance_x100),
+                        available: session.is_some(),
+                    });
+                }
+            }
 
             // Réglages : les changements s'appliquent à chaud — miroir
             // immédiat, caméra et débit par un redémarrage du flux (l'iPhone
@@ -181,17 +245,37 @@ fn main() -> Result<()> {
                         idle_since = None;
                         if session.is_none() && retry_at.is_none_or(|at| Instant::now() >= at) {
                             match start_stream(&options, &control, &settings) {
-                                Ok((mut new_session, new_decoder)) => {
+                                Ok((mut new_session, new_decoder, image_caps)) => {
                                     log::info!(
                                         "flux démarré pour la webcam (demande {}x{}@{} fps)",
                                         control.width,
                                         control.height,
                                         control.fps
                                     );
+                                    if let (Some(mapping), Some(caps)) =
+                                        (controls.as_ref(), image_caps.as_ref())
+                                    {
+                                        mapping.publish_ranges(caps);
+                                    }
                                     let _ = new_session.heartbeat();
                                     session = Some(new_session);
                                     decoder = Some(new_decoder);
                                     last_heartbeat = Instant::now();
+                                    // Les GET des clients peuvent répondre dès la
+                                    // première session.
+                                    if let Some(mapping) = controls.as_ref() {
+                                        let snapshot = mapping.snapshot();
+                                        mapping.publish_applied(&AppliedControls {
+                                            generation: snapshot.applied_generation,
+                                            flags: snapshot.flags,
+                                            zoom_x100: settings.zoom_x100,
+                                            iso: u32::from(settings.iso),
+                                            exposure_us: settings.exposure_duration_us,
+                                            white_balance_k: u32::from(settings.wb_temp_k),
+                                            focus_x100: u32::from(settings.focus_distance_x100),
+                                            available: true,
+                                        });
+                                    }
                                 }
                                 Err(error) => {
                                     log::warn!("démarrage impossible: {error:#} — nouvel essai dans 1 s");
@@ -319,7 +403,7 @@ fn start_stream(
     options: &Options,
     control: &Control,
     settings: &Settings,
-) -> Result<(Session, H264Decoder)> {
+) -> Result<(Session, H264Decoder, Option<ImageCaps>)> {
     let mut session = match &options.tcp {
         Some(address) => Session::connect_tcp(address)?,
         None => Session::connect_usb(options.port)?,
@@ -344,11 +428,20 @@ fn start_stream(
     session.set_image(image_message(settings))?;
     // L'ImageCaps arrive juste après le SetCamera. On l'attend ici, avant Start,
     // pour ne pas avaler les premiers messages du flux en le guettant plus tard.
-    match session.wait_image_caps(Duration::from_millis(500)) {
-        Ok(Some(caps)) => publish_image_caps(&caps, &camera.label),
-        Ok(None) => log::info!("cette caméra n'annonce pas ses plages (pas d'ImageCaps)"),
-        Err(error) => log::debug!("ImageCaps: {error}"),
-    }
+    let image_caps = match session.wait_image_caps(Duration::from_millis(500)) {
+        Ok(Some(caps)) => {
+            publish_image_caps(&caps, &camera.label);
+            Some(caps)
+        }
+        Ok(None) => {
+            log::info!("cette caméra n'annonce pas ses plages (pas d'ImageCaps)");
+            None
+        }
+        Err(error) => {
+            log::debug!("ImageCaps: {error}");
+            None
+        }
+    };
     session.set_format(SetFormat { width, height, fps, codec: CODEC_H264, bitrate_kbps })?;
     session.start()?;
     log::info!(
@@ -358,7 +451,7 @@ fn start_stream(
         if settings.mirror { "oui" } else { "non" }
     );
 
-    Ok((session, H264Decoder::new(false)?))
+    Ok((session, H264Decoder::new(false)?, image_caps))
 }
 
 /// Caméra à utiliser : `--camera` est prioritaire, sinon la préférence des

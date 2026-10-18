@@ -167,6 +167,13 @@ verrouillée à une distance / point + verrou), torche et son niveau, stabilisat
   `exposure_mode`, `exposure_bias_ev_x100`, `iso`, `exposure_us`, `focus_mode`, `focus_x_x10000`,
   `focus_y_x10000`, `focus_distance_x100`, `wb_mode`, `wb_temp_k`, `wb_tint_x100`, `torch`,
   `torch_level`, `stabilization`, `hdr`).
+- **Applications clientes** : ces réglages sont aussi exposés à la caméra virtuelle via `IKsControl`
+  (`Zoom`, `Exposure`, `Focus` en contrôle caméra ; `Gain` ↔ ISO et `WhiteBalance` ↔ température en
+  proc amp). Une application qui bouge un curseur dépose sa demande dans un mapping partagé
+  (`Global\WclControls`, décrit dans [docs/shm.md](docs/shm.md)) ; l'agent la reprend dans
+  `config.ini`, donc elle suit exactement le même chemin que la fenêtre image. Une DLL antérieure ne
+  crée pas ce mapping : la vidéo n'en est pas affectée, seuls les contrôles clients restent
+  indisponibles.
 
 ## Utilisation
 
