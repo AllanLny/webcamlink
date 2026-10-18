@@ -10,6 +10,7 @@ add_library(wcl-vcam SHARED
     src/dllmain.cpp
     src/shm_reader.cpp
     src/virtual_camera.cpp
+    src/wcl_controls.cpp
 )
 
 target_include_directories(wcl-vcam PRIVATE include)
