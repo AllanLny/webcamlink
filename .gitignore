@@ -20,3 +20,6 @@ __pycache__/
 
 # Outillage Command Code
 .commandcode/
+
+# IPA téléchargées (artefacts de build, pas de sources)
+ipa/
