@@ -82,10 +82,58 @@ fn main() -> Result<()> {
     let mut idle_since: Option<Instant> = None;
     let mut retry_at: Option<Instant> = None;
     let mut published = 0u64;
+    let mut settings = Settings::load();
 
     loop {
         if last_tick.elapsed() >= Duration::from_millis(250) {
             last_tick = Instant::now();
+
+            // Réglages : les changements s'appliquent à chaud — miroir
+            // immédiat, caméra et débit par un redémarrage du flux (l'iPhone
+            // ne reconfigure qu'au Start), format au prochain démarrage.
+            let updated = Settings::load();
+            if updated != settings {
+                let previous = settings;
+                settings = updated;
+                if updated.mirror != previous.mirror {
+                    log::info!(
+                        "miroir {} (à chaud)",
+                        if updated.mirror { "activé" } else { "désactivé" }
+                    );
+                    if let Some(active) = session.as_mut() {
+                        let _ = active.set_options(SetOptions {
+                            mirror: updated.mirror,
+                            rotation: 0,
+                            dim_preview: true,
+                        });
+                    }
+                }
+                if updated.preference != previous.preference
+                    || updated.bitrate_kbps != previous.bitrate_kbps
+                {
+                    log::info!(
+                        "caméra/débit modifiés ({} · {} kbps) — redémarrage du flux",
+                        updated.preference,
+                        updated.bitrate_kbps
+                    );
+                    if let Some(mut active) = session.take() {
+                        let _ = active.stop();
+                    }
+                    decoder = None;
+                    retry_at = None;
+                }
+                if updated.width != previous.width
+                    || updated.height != previous.height
+                    || updated.fps != previous.fps
+                {
+                    log::info!(
+                        "format {}x{}@{} demandé : la DLL l'applique au prochain démarrage de Windows",
+                        updated.width,
+                        updated.height,
+                        updated.fps
+                    );
+                }
+            }
 
             if shm.is_none() {
                 match ShmBlock::open(&names) {
@@ -104,9 +152,6 @@ fn main() -> Result<()> {
                     if control.consumer_active {
                         idle_since = None;
                         if session.is_none() && retry_at.is_none_or(|at| Instant::now() >= at) {
-                            // Relus à chaque ouverture : les réglages changent
-                            // sans redémarrer l'agent.
-                            let settings = Settings::load();
                             match start_stream(&options, &control, &settings) {
                                 Ok((mut new_session, new_decoder)) => {
                                     log::info!(
