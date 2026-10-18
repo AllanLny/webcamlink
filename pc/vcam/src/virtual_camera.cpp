@@ -30,6 +30,10 @@ constexpr UINT32 kFps = 30;
 constexpr UINT32 kFrameBytes = kWidth * kHeight * 3 / 2;
 constexpr LONGLONG kFrameDuration = 10'000'000LL / kFps;
 
+// KSCATEGORY_VIDEO_CAMERA
+const GUID kVideoCameraCategory = {
+    0xe5323777, 0xf976, 0x4f5b, {0x9b, 0x55, 0xb9, 0x46, 0x99, 0xc4, 0x6e, 0x44}};
+
 class VirtualCameraSource;
 
 /// The single video stream exposed by the virtual camera.
@@ -118,16 +122,61 @@ private:
 /// The virtual camera media source.
 class VirtualCameraSource
     : public RuntimeClass<RuntimeClassFlags<ClassicCom>, IMFMediaSourceEx,
-                          IMFSampleAllocatorControl> {
+                          IMFSampleAllocatorControl, IMFGetService> {
 public:
     friend class CameraStream;
 
     VirtualCameraSource() = default;
 
+    /// Explicit QueryInterface: it hides WRL's implementation so every request
+    /// is logged — that log is how the missing interface gets identified.
+    STDMETHODIMP QueryInterface(REFIID riid, void** object) {
+        if (!object) {
+            return E_POINTER;
+        }
+        *object = nullptr;
+        wchar_t guid[64]{};
+        StringFromGUID2(riid, guid, 64);
+        wchar_t line[192];
+
+        void* found = nullptr;
+        if (IsEqualIID(riid, IID_IUnknown) ||
+            IsEqualIID(riid, __uuidof(IMFMediaSource)) ||
+            IsEqualIID(riid, __uuidof(IMFMediaEventGenerator))) {
+            found = static_cast<IMFMediaSourceEx*>(this);
+        } else if (IsEqualIID(riid, __uuidof(IMFMediaSourceEx))) {
+            found = static_cast<IMFMediaSourceEx*>(this);
+        } else if (IsEqualIID(riid, __uuidof(IMFSampleAllocatorControl))) {
+            found = static_cast<IMFSampleAllocatorControl*>(this);
+        } else if (IsEqualIID(riid, __uuidof(IMFGetService))) {
+            found = static_cast<IMFGetService*>(this);
+        }
+
+        if (!found) {
+            swprintf_s(line, L"source::QueryInterface(%s) -> E_NOINTERFACE", guid);
+            wcl::LogLine(line);
+            return E_NOINTERFACE;
+        }
+        *object = found;
+        AddRef();
+        swprintf_s(line, L"source::QueryInterface(%s) -> OK", guid);
+        wcl::LogLine(line);
+        return S_OK;
+    }
+
     HRESULT Initialize() {
+        // Source attributes: the Frame Server reads these (MF_E_ATTRIBUTENOTFOUND
+        // otherwise) to recognise a video capture device source.
+        HRESULT hr = MFCreateAttributes(&source_attributes_, 6);
+        if (FAILED(hr)) {
+            return hr;
+        }
+        source_attributes_->SetString(MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME, L"WebcamLink");
+        source_attributes_->SetUINT32(MF_SA_D3D_AWARE, 0);
+
         // One NV12 video stream, 1920x1080 @ 30 fps.
         ComPtr<IMFMediaType> type;
-        HRESULT hr = MFCreateMediaType(&type);
+        hr = MFCreateMediaType(&type);
         if (FAILED(hr)) {
             return hr;
         }
@@ -137,7 +186,14 @@ public:
         MFSetAttributeRatio(type.Get(), MF_MT_FRAME_RATE, kFps, 1);
         MFSetAttributeRatio(type.Get(), MF_MT_PIXEL_ASPECT_RATIO, 1, 1);
         type->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
-        MFSetAttributeRatio(type.Get(), MF_MT_AVG_BITRATE, 0, 1);
+        // The Frame Server reads these; a missing one surfaces as
+        // MF_E_ATTRIBUTENOTFOUND while it sets up the stream.
+        type->SetUINT32(MF_MT_ALL_SAMPLES_INDEPENDENT, TRUE);
+        type->SetUINT32(MF_MT_FIXED_SIZE_SAMPLES, TRUE);
+        type->SetUINT32(MF_MT_COMPRESSED, FALSE);
+        type->SetUINT32(MF_MT_SAMPLE_SIZE, kFrameBytes);
+        type->SetUINT32(MF_MT_DEFAULT_STRIDE, kWidth);
+        type->SetUINT32(MF_MT_AVG_BITRATE, 20'000'000);
 
         IMFMediaType* types[] = {type.Get()};
         hr = MFCreateStreamDescriptor(0, 1, types, &stream_descriptor_);
@@ -258,9 +314,6 @@ public:
         if (!attributes) {
             return E_POINTER;
         }
-        if (!source_attributes_) {
-            MFCreateAttributes(&source_attributes_, 2);
-        }
         return source_attributes_.CopyTo(attributes);
     }
     STDMETHODIMP GetStreamAttributes(DWORD stream_id, IMFAttributes** attributes) override {
@@ -294,6 +347,16 @@ public:
             *usage = MFSampleAllocatorUsage_UsesCustomAllocator;
         }
         return S_OK;
+    }
+
+    // IMFGetService — the Frame Server probes services; answer MF_E_UNSUPPORTED_SERVICE
+    // rather than refusing the interface.
+    STDMETHODIMP GetService(REFGUID service, REFIID riid, LPVOID* object) override {
+        if (!object) {
+            return E_POINTER;
+        }
+        *object = nullptr;
+        return MF_E_UNSUPPORTED_SERVICE;
     }
 
     wcl::ShmReader* Shm() { return &shm_; }

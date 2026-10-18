@@ -12,7 +12,9 @@ add_library(wcl-vcam SHARED
 )
 
 target_include_directories(wcl-vcam PRIVATE include)
-target_compile_definitions(wcl-vcam PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+target_compile_definitions(wcl-vcam PRIVATE
+    UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN
+    _WIN32_WINNT=0x0A00 WINVER=0x0A00 NTDDI_VERSION=0x0A00000A)
 
 # COM entry points are exported through the .def file (matches the SDK's own
 # declaration linkage, which __declspec(dllexport) would conflict with).
