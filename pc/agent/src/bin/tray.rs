@@ -81,18 +81,24 @@ const IDC_MIRROR: u16 = 205;
 const IDC_AUTOSTART: u16 = 206;
 const IDC_STATUS: u16 = 207;
 
-const RESOLUTIONS: [(u32, u32, &str); 3] = [
+// Plafond matériel : 4K (capacité d'un slot de mémoire partagée
+// = 3840 x 2160 x 1,5 octet). Au-delà, la DLL retomberait sur 1080p.
+const RESOLUTIONS: [(u32, u32, &str); 4] = [
+    (3840, 2160, "3840x2160 (4K)"),
     (1920, 1080, "1920x1080"),
     (1280, 720, "1280x720"),
     (640, 480, "640x480"),
 ];
 const FPS_CHOICES: [u32; 2] = [30, 60];
 const FPS_LABELS: [&str; 2] = ["30", "60"];
-const BITRATES: [(u32, &str); 4] = [
+const BITRATES: [(u32, &str); 7] = [
     (5_000, "5 Mbit/s"),
     (10_000, "10 Mbit/s"),
     (20_000, "20 Mbit/s"),
     (30_000, "30 Mbit/s"),
+    (40_000, "40 Mbit/s"),
+    (60_000, "60 Mbit/s"),
+    (100_000, "100 Mbit/s"),
 ];
 
 #[derive(Default)]
