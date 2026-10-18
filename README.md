@@ -18,6 +18,7 @@ que voient Teams, Zoom, OBS, l'app Caméra, etc.
 - [Utilisation](#utilisation)
 - [Dépannage](#dépannage)
 - [Développement sans iPhone](#développement-sans-iphone)
+- [Aperçu de l'app iOS (sans Mac)](#aperçu-de-lapp-ios-sans-mac)
 - [Structure du dépôt](#structure-du-dépôt)
 - [État du projet](#état-du-projet)
 - [Contraintes iOS](#contraintes-ios)
@@ -183,6 +184,20 @@ cargo run --release --bin wcl-view -- --tcp 127.0.0.1:5321    # aperçu (--no-wi
 ```
 
 Avec un iPhone branché (app lancée, écran allumé) : `wcl-view` sans `--tcp` passe par usbmuxd.
+
+## Aperçu de l'app iOS (sans Mac)
+
+Trois niveaux, du plus rapide au plus complet :
+
+1. **Captures d'écran automatiques** — le workflow `preview` compile l'app pour le simulateur iOS sur un
+   runner macOS, la lance et publie `apercu-clair.png` / `apercu-sombre.png` en artefacts du run. Il se
+   déclenche à la demande (`Actions → preview → Run workflow`, sur n'importe quelle branche) et sur les
+   PR qui touchent `ios/**` ; les images se téléchargent depuis le résumé du job.
+2. **Compilation** — `ci.yml` (job `ios`) compile l'app non signée à chaque PR : c'est ce qui attrape
+   les erreurs Swift, sans montrer l'écran.
+3. **Sur l'iPhone** — lance `build-ipa` (`Run workflow`) en choisissant la branche, récupère l'IPA non
+   signée dans les artefacts et installe-la avec Sideloadly ou AltStore : caméra et PC compris, c'est la
+   vraie app.
 
 ## Structure du dépôt
 
