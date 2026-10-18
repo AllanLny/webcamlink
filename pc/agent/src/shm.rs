@@ -396,10 +396,6 @@ impl ShmBlock {
         self.read_u32(self.slot_base(slot) + offset)
     }
 
-    fn read_slot_u64(&self, slot: usize, offset: usize) -> u64 {
-        self.read_u64(self.slot_base(slot) + offset)
-    }
-
     fn write_slot_u32(&mut self, slot: usize, offset: usize, value: u32) {
         let base = self.slot_base(slot);
         self.write_u32(base + offset, value);
