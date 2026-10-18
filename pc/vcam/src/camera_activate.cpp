@@ -94,7 +94,16 @@ public:
         return store_->Compare(theirs, match, result);
     }
     STDMETHODIMP GetUINT32(REFGUID key, UINT32* value) override {
-        return store_->GetUINT32(key, value);
+        HRESULT hr = store_->GetUINT32(key, value);
+        if (FAILED(hr)) {
+            wchar_t guid[64]{};
+            StringFromGUID2(key, guid, 64);
+            wchar_t line[192];
+            swprintf_s(line, L"activate::GetUINT32(%s) -> 0x%08lX", guid,
+                       static_cast<unsigned long>(hr));
+            wcl::LogLine(line);
+        }
+        return hr;
     }
     STDMETHODIMP GetUINT64(REFGUID key, UINT64* value) override {
         return store_->GetUINT64(key, value);
@@ -103,7 +112,16 @@ public:
         return store_->GetDouble(key, value);
     }
     STDMETHODIMP GetGUID(REFGUID key, GUID* value) override {
-        return store_->GetGUID(key, value);
+        HRESULT hr = store_->GetGUID(key, value);
+        if (FAILED(hr)) {
+            wchar_t guid[64]{};
+            StringFromGUID2(key, guid, 64);
+            wchar_t line[192];
+            swprintf_s(line, L"activate::GetGUID(%s) -> 0x%08lX", guid,
+                       static_cast<unsigned long>(hr));
+            wcl::LogLine(line);
+        }
+        return hr;
     }
     STDMETHODIMP GetStringLength(REFGUID key, UINT32* length) override {
         return store_->GetStringLength(key, length);
@@ -124,7 +142,16 @@ public:
         return store_->GetAllocatedBlob(key, buffer, size);
     }
     STDMETHODIMP GetUnknown(REFGUID key, REFIID riid, LPVOID* value) override {
-        return store_->GetUnknown(key, riid, value);
+        HRESULT hr = store_->GetUnknown(key, riid, value);
+        if (FAILED(hr)) {
+            wchar_t guid[64]{};
+            StringFromGUID2(key, guid, 64);
+            wchar_t line[192];
+            swprintf_s(line, L"activate::GetUnknown(%s) -> 0x%08lX", guid,
+                       static_cast<unsigned long>(hr));
+            wcl::LogLine(line);
+        }
+        return hr;
     }
     STDMETHODIMP SetItem(REFGUID key, REFPROPVARIANT value) override {
         return store_->SetItem(key, value);
