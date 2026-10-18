@@ -12,4 +12,8 @@ HRESULT CreateVirtualCamera(IUnknown** source);
 /// factory; it builds the media source on demand.
 HRESULT CreateCameraActivate(IUnknown** activate);
 
+/// Appends a line to %TEMP%\webcamlink-vcam.log (the DLL runs inside the
+/// Frame Server, a file is the only observable output).
+void LogLine(const wchar_t* message);
+
 }  // namespace wcl

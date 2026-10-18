@@ -8,6 +8,8 @@
 #include <wrl/client.h>
 #include <wrl/implements.h>
 
+#include <cstdio>
+
 #include "virtual_camera.h"
 
 using Microsoft::WRL::ClassicCom;
@@ -28,15 +30,26 @@ public:
             return E_POINTER;
         }
         *object = nullptr;
+        wchar_t guid[64]{};
+        StringFromGUID2(riid, guid, 64);
+        wchar_t line[192];
+        swprintf_s(line, L"ActivateObject(riid=%s)", guid);
+        wcl::LogLine(line);
+
         if (!source_) {
             ComPtr<IUnknown> created;
             HRESULT hr = wcl::CreateVirtualCamera(&created);
             if (FAILED(hr)) {
+                wcl::LogLine(L"CreateVirtualCamera a échoué");
                 return hr;
             }
             source_ = created;
         }
-        return source_->QueryInterface(riid, object);
+        HRESULT hr = source_->QueryInterface(riid, object);
+        swprintf_s(line, L"ActivateObject(riid=%s) -> 0x%08lX", guid,
+                   static_cast<unsigned long>(hr));
+        wcl::LogLine(line);
+        return hr;
     }
 
     STDMETHODIMP ShutdownObject() override {

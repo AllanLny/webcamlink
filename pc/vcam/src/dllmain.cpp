@@ -95,6 +95,12 @@ public:
 
 }  // namespace
 
+namespace wcl {
+
+void LogLine(const wchar_t* message) { Log(message); }
+
+}  // namespace wcl
+
 STDAPI DllGetClassObject(REFCLSID clsid, REFIID riid, void** object) {
     if (!object) {
         return E_POINTER;
