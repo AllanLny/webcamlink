@@ -9,3 +9,10 @@
 *.py text eol=lf
 *.cpp text eol=lf
 *.h text eol=lf
+LICENSE text eol=lf
+
+# Binaires : aucune conversion
+*.png binary
+*.ico binary
+*.jpg binary
+*.ipa binary
