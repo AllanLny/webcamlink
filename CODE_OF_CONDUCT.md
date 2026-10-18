@@ -25,7 +25,7 @@ bienvenues ; les comportements méprisants ne le sont pas.
 
 Ce code s'applique aux issues, pull requests, discussions et à tout espace lié au projet. En cas de
 manquement, la modération peut supprimer un message, fermer un fil et, si nécessaire, bloquer un
-compte. Pour signaler un problème, écris à **allan1411lannoy@gmail.com** : les signalements sont traités
+compte. Pour signaler un problème, écris à **allancontactdevpro@gmail.com** : les signalements sont traités
 discrètement et le signalant n'est pas exposé.
 
 Ce texte s'inspire du [Contributor Covenant v2.1](https://www.contributor-covenant.org/version/2/1/code_of_conduct/),

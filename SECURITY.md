@@ -4,7 +4,7 @@
 
 Merci de **ne pas** ouvrir d'issue publique pour une vulnérabilité. Utilise de préférence
 [GitHub Security Advisories](https://github.com/AllanLny/webcamlink/security/advisories/new)
-(onglet *Security* → *Report a vulnerability*), ou écris à **allan1411lannoy@gmail.com**.
+(onglet *Security* → *Report a vulnerability*), ou écris à **allancontactdevpro@gmail.com**.
 
 Décris le problème, la version concernée et, si possible, une reproduction. Je réponds sous quelques
 jours et je te crédite dans le correctif si tu le souhaites.
