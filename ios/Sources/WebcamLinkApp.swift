@@ -17,6 +17,10 @@ struct ContentView: View {
     @AppStorage(Notifier.soundKey) private var notifyWithSound = true
     @AppStorage("auto.keepReachable") private var keepReachable = true
 
+    /// The preview workflow launches the app with `-preview`: the screenshots
+    /// must show the interface, not the permission dialogs of a first launch.
+    private let isPreview = ProcessInfo.processInfo.arguments.contains("-preview")
+
     var body: some View {
         NavigationStack {
             List {
@@ -134,8 +138,10 @@ struct ContentView: View {
             .navigationTitle("WebcamLink")
             .onAppear {
                 UIApplication.shared.isIdleTimerDisabled = keepScreenAwake
-                if notifyCameraRequest { Notifier.requestAuthorizationIfUndetermined() }
-                if keepReachable { AudioKeepAlive.shared.start() }
+                if !isPreview {
+                    if notifyCameraRequest { Notifier.requestAuthorizationIfUndetermined() }
+                    if keepReachable { AudioKeepAlive.shared.start() }
+                }
                 server.start()
             }
         }
