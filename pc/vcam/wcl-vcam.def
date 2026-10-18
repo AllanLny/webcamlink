@@ -1,0 +1,4 @@
+LIBRARY wcl-vcam
+EXPORTS
+    DllGetClassObject   PRIVATE
+    DllCanUnloadNow     PRIVATE

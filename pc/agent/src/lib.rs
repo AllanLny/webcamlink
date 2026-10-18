@@ -16,3 +16,5 @@ pub mod encode;
 pub mod mf;
 #[cfg(windows)]
 pub mod preview;
+#[cfg(windows)]
+pub mod shm;
