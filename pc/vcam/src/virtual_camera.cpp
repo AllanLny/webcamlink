@@ -175,6 +175,8 @@ public:
         if (FAILED(hr)) {
             return hr;
         }
+        source_attributes_->SetGUID(MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_CATEGORY,
+                                    kVideoCameraCategory);
         source_attributes_->SetString(MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME, L"WebcamLink");
         source_attributes_->SetUINT32(MF_SA_D3D_AWARE, 0);
 
