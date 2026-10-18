@@ -185,6 +185,12 @@ final class LinkServer: ObservableObject {
         publish { self.connectedClients = 1 }
         log("Client connecté")
 
+        // The PC knocks when it needs the camera: if we are not on screen, the
+        // user has to be told — nothing else can bring the app back by itself.
+        if !AppActivity.shared.isForeground {
+            Notifier.postCameraRequest()
+        }
+
         let session = LinkSession(
             queue: queue,
             cameras: cameras,

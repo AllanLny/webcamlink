@@ -20,6 +20,7 @@ que voient Teams, Zoom, OBS, l'app Caméra, etc.
 - [Développement sans iPhone](#développement-sans-iphone)
 - [Structure du dépôt](#structure-du-dépôt)
 - [État du projet](#état-du-projet)
+- [Mode automatique (iOS)](#mode-automatique-ios)
 - [Contraintes iOS](#contraintes-ios)
 - [Distribution de l'app iOS](#distribution-de-lapp-ios)
 - [Contribuer](#contribuer)
@@ -217,14 +218,38 @@ altstore/                source AltStore (source.json)
 - **P3 / P5 — à venir** : contrôles d'image (zoom, exposition, mise au point) et MSI WiX (installation,
   enregistrement, autostart).
 
+## Mode automatique (iOS)
+
+L'app expose un menu **Mode automatique** :
+
+- **Alerter quand le PC demande** — notification locale (sonore si voulu) dès qu'un client se connecte
+  alors que l'app n'est plus à l'écran ; un appui dessus revient sur l'app, qui redémarre le flux. Une
+  demande toutes les 30 s au maximum, pour ne pas inonder le centre de notifications.
+- **Rester joignable en arrière-plan** — l'app joue un silence (mode audio de fond) pour que le
+  listener survive hors écran : sans lui, iOS suspend le process et le PC ne peut plus rien demander.
+- **Garder l'écran allumé** — l'écran ne s'éteint plus tant que l'app est ouverte.
+
+Ce qu'iOS **ne permet pas**, pour aucune app : déverrouiller l'appareil ou rallumer l'écran depuis
+l'extérieur, et ramener une app au premier plan toute seule. Le « déverrouillage automatique » passe
+donc par la configuration du téléphone :
+
+1. iPhone **sans code** (ou code désactivé pendant l'usage webcam) : au rallumage, l'app est déjà au
+   premier plan, il n'y a rien à déverrouiller ;
+2. **Verrouillage auto → Jamais** (Réglages → Affichage et luminosité) ;
+3. **Accès guidé** (Réglages → Accessibilité) pour verrouiller le téléphone sur WebcamLink ;
+4. **Raccourcis → Automatisation → Chargeur → « Ouvrir WebcamLink »** : l'app revient seule au premier
+   plan dès que le téléphone est branché.
+
+Le téléphone devient alors une webcam dédiée : on le branche, l'app s'ouvre, le PC se connecte et le
+flux démarre sans intervention.
+
 ## Contraintes iOS
 
-- La caméra ne fonctionne que si l'app est **au premier plan** ; écran verrouillé = capture impossible.
-- Le PC ne peut ni déverrouiller l'iPhone ni mettre l'app au premier plan (aucune API).
-- Mode veille : l'app reste ouverte, écran maintenu allumé, aperçu assombri → le PC démarre le flux
-  automatiquement.
-- Alerte de secours : si l'app est en arrière-plan (gardée vivante), une notification locale + son
-  prévient quand le PC demande la caméra.
+- La caméra ne fonctionne que si l'app est **au premier plan** ; écran éteint = capture impossible.
+- Le PC ne peut ni déverrouiller l'iPhone ni mettre l'app au premier plan (aucune API) : il se connecte,
+  l'app prévient par une notification, et le flux démarre dès que le téléphone revient.
+- Mode veille : l'app reste ouverte, écran maintenu allumé → le PC démarre le flux automatiquement.
+- Si l'app passe en arrière-plan, elle envoie `NotInForeground` au PC plutôt que de laisser un flux muet.
 
 ## Distribution de l'app iOS
 
