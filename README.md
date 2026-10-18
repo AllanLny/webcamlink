@@ -146,6 +146,28 @@ mirror=0
 > Une valeur hors bornes est ramenée dans la plage. Les commentaires ne sont pas acceptés dans les
 > lignes de valeurs (la DLL lit le fichier avec les API INI de Windows).
 
+### Réglages image
+
+Le bouton **« Réglages image… »** (ou clic droit sur l'icône → même entrée) ouvre les contrôles « pro »
+de la caméra iPhone : zoom, exposition (automatique / biais en EV / manuelle **ISO + durée**), balance
+des blancs (automatique / verrouillée / manuelle en kelvins + teinte), mise au point (continu /
+verrouillée à une distance / point + verrou), torche et son niveau, stabilisation, HDR.
+
+- Les curseurs sont **bornés par ce que la caméra annonce** : l'agent écrit `caps.ini`
+  (`%ProgramData%\WebcamLink\`, plage ISO, durées minimale et maximale, zoom maximal, balance, modes)
+  à la connexion de l'iPhone, et la fenêtre s'en sert. Un contrôle que la caméra ne sait pas faire est
+  **grisé**, tout comme ce que le mode courant rend sans effet (ISO et durée en automatique, teinte en
+  balance automatique, niveau de torche quand elle est éteinte).
+- **« Tout auto »** remet zoom, exposition, balance, mise au point, torche et stabilisation en
+  automatique.
+- Ces réglages s'appliquent **à chaud**, même pendant un flux (~250 ms : l'agent relit le fichier quatre
+  fois par seconde). Hors flux, ils sont mémorisés et rejoués à la connexion suivante. Un mode refusé
+  par la caméra est affiché dans la fenêtre **sans interrompre le flux**.
+- Les clés correspondantes vivent dans la section `[image]` de `config.ini` (`zoom_x100`,
+  `exposure_mode`, `exposure_bias_ev_x100`, `iso`, `exposure_us`, `focus_mode`, `focus_x_x10000`,
+  `focus_y_x10000`, `focus_distance_x100`, `wb_mode`, `wb_temp_k`, `wb_tint_x100`, `torch`,
+  `torch_level`, `stabilization`, `hdr`).
+
 ## Utilisation
 
 Menu de l'icône (clic droit) : **Réglages…**, **Démarrer/Arrêter l'agent**, **Ouvrir le journal**,
