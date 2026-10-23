@@ -221,10 +221,46 @@ private:
     bool size_mismatch_logged_ = false;
 };
 
+/// Contrôle étendu minimal. Depuis Windows 11, le pipeline et l'app Caméra
+/// interrogent `IMFExtendedCameraController` sur la source avant de démarrer le
+/// flux : sans l'interface, le client réessaie indéfiniment. Aucune capacité
+/// n'est annoncée — les réglages passent par `IKsControl` et la fenêtre image —
+/// mais l'objet existe et accepte les appels, ce qui suffit à la négociation.
+class ExtendedCameraControl
+    : public RuntimeClass<RuntimeClassFlags<ClassicCom>, IMFExtendedCameraControl> {
+public:
+    ExtendedCameraControl(ULONG property_id, ULONGLONG capabilities)
+        : property_id_(property_id), capabilities_(capabilities) {}
+
+    ULONGLONG STDMETHODCALLTYPE GetCapabilities() override { return capabilities_; }
+    ULONGLONG STDMETHODCALLTYPE GetFlags() override { return flags_; }
+    HRESULT STDMETHODCALLTYPE SetFlags(ULONGLONG flags) override {
+        flags_ = flags;
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE LockPayload(BYTE** payload, ULONG* size) override {
+        if (!payload || !size) {
+            return E_POINTER;
+        }
+        *payload = payload_;
+        *size = sizeof(payload_);
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE UnlockPayload() override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE CommitSettings() override { return S_OK; }
+
+private:
+    ULONG property_id_ = 0;
+    ULONGLONG capabilities_ = 0;
+    ULONGLONG flags_ = 0;
+    BYTE payload_[16]{};
+};
+
 /// The virtual camera media source.
 class VirtualCameraSource
     : public RuntimeClass<RuntimeClassFlags<ClassicCom>, IMFMediaSourceEx,
-                          IMFSampleAllocatorControl, IMFGetService, wcl::IKsControlLocal> {
+                          IMFSampleAllocatorControl, IMFGetService, IMFExtendedCameraController,
+                          wcl::IKsControlLocal> {
 public:
     friend class CameraStream;
 
@@ -252,6 +288,8 @@ public:
             found = static_cast<IMFSampleAllocatorControl*>(this);
         } else if (IsEqualIID(riid, __uuidof(IMFGetService))) {
             found = static_cast<IMFGetService*>(this);
+        } else if (IsEqualIID(riid, __uuidof(IMFExtendedCameraController))) {
+            found = static_cast<IMFExtendedCameraController*>(this);
         } else if (IsEqualIID(riid, __uuidof(wcl::IKsControlLocal))) {
             found = static_cast<wcl::IKsControlLocal*>(this);
         }
@@ -531,6 +569,30 @@ public:
         return KsNotSupported(L"KsEvent");
     }
 
+    // IMFExtendedCameraController — probed by the pipeline and the Windows 11
+    // camera app before starting. Handing back a control object (without
+    // capabilities: the tray and `IKsControl` drive the settings) keeps the
+    // negotiation going instead of looping forever.
+    STDMETHODIMP GetExtendedCameraControl(DWORD stream_index, ULONG property_id,
+                                          IMFExtendedCameraControl** control) override {
+        if (!control) {
+            return E_POINTER;
+        }
+        *control = nullptr;
+        if (stream_index != 0) {
+            return E_INVALIDARG;
+        }
+        auto created = Microsoft::WRL::Make<ExtendedCameraControl>(property_id, 0);
+        if (!created) {
+            return E_OUTOFMEMORY;
+        }
+        wchar_t line[128];
+        swprintf_s(line, L"source::GetExtendedCameraControl(id %lu) -> contrôle minimal", property_id);
+        wcl::LogLine(line);
+        *control = created.Detach();
+        return S_OK;
+    }
+
     wcl::ShmReader* Shm() { return &shm_; }
     MF_STREAM_STATE State() { return state_; }
 
@@ -574,6 +636,15 @@ private:
         }
 
         const auto& request = *static_cast<const wcl::KsPropertyRequest*>(property);
+        // Nommer chaque requête : sans le set et l'id, impossible de savoir ce
+        // que le client réclame quand il abandonne.
+        wchar_t set[64]{};
+        StringFromGUID2(request.set, set, 64);
+        wchar_t line[192];
+        swprintf_s(line, L"source::KsProperty(set %s, id %lu, flags 0x%08lx)", set, request.id,
+                   request.flags);
+        wcl::LogLine(line);
+
         ClientControl control = ClientControl::Zoom;
         if (!MatchControl(request, control)) {
             KsNotSupported(L"KsProperty(inconnue)");
