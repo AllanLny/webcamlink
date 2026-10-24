@@ -28,8 +28,8 @@ restent testables seuls (`cargo test`, journal `%ProgramData%\WebcamLink\vcam.lo
 ## Ce qu'on attend d'une PR
 
 - **Petite et ciblée** : un seul sujet par PR (un correctif, une fonctionnalité).
-- **Testée** : `cargo test --release` passe et la DLL compile (`cmake --build pc/vcam/build --config
-  Release`). Si le changement touche la caméra virtuelle ou l'agent, décris le **test manuel** effectué
+- **Testée** : `cargo test --release` passe et la DLL compile (`scripts/check.ps1` enchaîne les deux).
+  Si le changement touche la caméra virtuelle ou l'agent, décris le **test manuel** effectué
   (application cliente, format, version de Windows et d'iOS).
 - **Documentée** : mets à jour le README ou `docs/` dès que le comportement visible change.
 - **Sans secret** : pas de clé, d'identifiant, de jeton ni de chemin personnel.
