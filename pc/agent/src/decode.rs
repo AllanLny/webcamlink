@@ -118,7 +118,8 @@ impl H264Decoder {
             let (width, height) = mf::unpack_size(size);
             log::info!("sortie décodeur candidate {index}: {subtype:?} {width}x{height}");
             if subtype == MFVideoFormat_NV12 {
-                unsafe { self.transform.SetOutputType(0, &candidate, 0)? };
+                unsafe { self.transform.SetOutputType(0, &candidate, 0) }
+                    .context("SetOutputType NV12")?;
                 self.stream_info = unsafe { self.transform.GetOutputStreamInfo(0)? };
                 return Ok(candidate);
             }
@@ -134,7 +135,8 @@ impl H264Decoder {
         if subtype != MFVideoFormat_NV12 {
             log::warn!("sortie décodeur non NV12 ({subtype:?}) — l'aperçu peut être incorrect");
         }
-        unsafe { self.transform.SetOutputType(0, &fallback, 0)? };
+        unsafe { self.transform.SetOutputType(0, &fallback, 0) }
+            .context("SetOutputType (repli)")?;
         self.stream_info = unsafe { self.transform.GetOutputStreamInfo(0)? };
         Ok(fallback)
     }
@@ -191,17 +193,28 @@ impl H264Decoder {
                     .cbSize
                     .max(self.width.saturating_mul(self.height).saturating_mul(3) / 2);
                 unsafe {
-                    let buffer = MFCreateMemoryBuffer(capacity.max(64))?;
-                    let sample = MFCreateSample()?;
-                    sample.AddBuffer(&buffer)?;
+                    let buffer = MFCreateMemoryBuffer(capacity.max(64))
+                        .context("MFCreateMemoryBuffer (sortie décodeur)")?;
+                    let sample =
+                        MFCreateSample().context("MFCreateSample (sortie décodeur)")?;
+                    sample.AddBuffer(&buffer).context("AddBuffer (sortie décodeur)")?;
                     output.pSample = core::mem::ManuallyDrop::new(Some(sample));
                 }
             }
 
             let mut status = 0u32;
-            match unsafe {
+            let result = unsafe {
                 self.transform.ProcessOutput(0, std::slice::from_mut(&mut output), &mut status)
-            } {
+            };
+            // Le sample de sortie est le nôtre. Il vit dans un `ManuallyDrop`,
+            // donc rien ne le libère sur les sorties anticipées : on le reprend
+            // avant de regarder le résultat, sinon chaque trame sans sortie
+            // (le cas courant) fuit son tampon et le processus meurt en
+            // E_OUTOFMEMORY au bout de quelques minutes.
+            let sample: Option<IMFSample> =
+                unsafe { core::mem::ManuallyDrop::take(&mut output.pSample) };
+
+            match result {
                 Ok(()) => {}
                 Err(error) if error.code() == MF_E_TRANSFORM_NEED_MORE_INPUT => return Ok(frames),
                 Err(error) if error.code() == MF_E_TRANSFORM_STREAM_CHANGE => {
@@ -211,7 +224,6 @@ impl H264Decoder {
                 Err(error) => return Err(error).context("ProcessOutput décodeur"),
             }
 
-            let sample: Option<IMFSample> = unsafe { core::mem::ManuallyDrop::take(&mut output.pSample) };
             let Some(sample) = sample else { continue };
 
             let pts_us = unsafe { sample.GetSampleTime() }
