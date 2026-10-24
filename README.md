@@ -139,7 +139,7 @@ mirror=0
 | Clé | Valeurs | Défaut |
 |---|---|---|
 | `width` / `height` | 160–3840 / 120–2160 — 4K = plafond de la mémoire partagée | 1920 / 1080 |
-| `fps` | 1–60 | 30 |
+| `fps` | 1–60 (le 4K est ramené à 30 : au-delà, l'encodeur iPhone décroche) | 30 |
 | `bitrate_kbps` | 500–100000 | 20000 |
 | `preference` | `auto`, `back_wide`, `back_ultra_wide`, `back_tele`, `front` | `auto` |
 | `mirror` | `0` / `1` | `0` |
