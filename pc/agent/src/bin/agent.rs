@@ -393,6 +393,14 @@ fn main() -> Result<()> {
         }
 
         if drop_session {
+            // The DLL shows its idle placeholder while the producer is not
+            // streaming: saying so explicitly avoids a frozen last frame until
+            // the one-second staleness timeout kicks in.
+            if let Some(block) = shm.as_mut() {
+                if block.producer_state() == PRODUCER_STREAMING {
+                    block.set_producer_state(PRODUCER_STOPPED, 0);
+                }
+            }
             session = None;
             decoder = None;
         }

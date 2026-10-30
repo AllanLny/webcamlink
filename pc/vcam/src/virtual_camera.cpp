@@ -10,6 +10,7 @@
 
 #include <atomic>
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 #include <mutex>
 #include <vector>
@@ -217,6 +218,8 @@ private:
     MF_STREAM_STATE state_ = MF_STREAM_STATE_STOPPED;
     UINT32 delivered_ = 0;
     std::vector<uint8_t> frame_;
+    std::chrono::steady_clock::time_point last_frame_at_{};
+    bool placeholder_active_ = false;
     bool request_logged_ = false;
     bool size_mismatch_logged_ = false;
 };
@@ -919,8 +922,8 @@ HRESULT CameraStream::DeliverSample(IUnknown* token) {
     }
 
     // Live source: never wait for the producer, the pipeline paces us. When
-    // nothing new is ready the previous frame is repeated (a placeholder on the
-    // first request), which keeps the stream at its own frame rate.
+    // nothing new is ready, the previous frame is repeated for a moment so the
+    // stream keeps its cadence.
     std::vector<uint8_t> incoming;
     UINT32 width = 0;
     UINT32 height = 0;
@@ -936,9 +939,28 @@ HRESULT CameraStream::DeliverSample(IUnknown* token) {
     }
     if (has_frame && size_matches) {
         frame_.swap(incoming);
+        last_frame_at_ = std::chrono::steady_clock::now();
     }
-    if (frame_.size() != static_cast<size_t>(frame_bytes_)) {
-        FillPlaceholder(frame_);
+
+    // Repeating the last frame forever turns a stopped producer (iPhone app in
+    // the background, session lost) into a frozen image that looks like huge
+    // latency. After a second without a new frame — or as soon as the producer
+    // is no longer streaming — show the idle placeholder instead.
+    const bool streaming = shm_ && shm_->ProducerState() == wcl::kProducerStreaming;
+    const bool stale =
+        last_frame_at_.time_since_epoch().count() == 0 ||
+        std::chrono::steady_clock::now() - last_frame_at_ > std::chrono::milliseconds(1000);
+    if (!streaming || stale) {
+        if (!placeholder_active_) {
+            placeholder_active_ = true;
+            FillPlaceholder(frame_);
+            wcl::LogLine(streaming
+                             ? L"stream: producteur muet depuis 1 s — image de remplacement"
+                             : L"stream: producteur arrêté — image de remplacement");
+        }
+    } else if (placeholder_active_) {
+        placeholder_active_ = false;
+        wcl::LogLine(L"stream: image du producteur de retour");
     }
 
     ComPtr<IMFSample> sample;
