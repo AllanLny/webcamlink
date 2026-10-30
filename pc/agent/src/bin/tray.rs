@@ -754,7 +754,7 @@ unsafe fn create_settings_window() -> Result<()> {
 
     muted[5] = control(
         w!("Static"),
-        "La résolution et les images/s s'appliquent au prochain démarrage de Windows.\nCaméra, débit et miroir s'appliquent dès la prochaine ouverture de la caméra.",
+        "La résolution et les images/s s'appliquent au prochain démarrage de Windows (4K : 30 fps maximum).\nCaméra, débit et miroir s'appliquent dès la prochaine ouverture de la caméra.",
         label,
         fonts.small,
         20,
