@@ -19,6 +19,7 @@ que voient Teams, Zoom, OBS, l'app Caméra, etc.
 - [Dépannage](#dépannage)
 - [Développement sans iPhone](#développement-sans-iphone)
 - [Aperçu de l'app iOS (sans Mac)](#aperçu-de-lapp-ios-sans-mac)
+- [Vérifier sans CI](#vérifier-sans-ci)
 - [Latence](#latence)
 - [Structure du dépôt](#structure-du-dépôt)
 - [État du projet](#état-du-projet)
@@ -229,6 +230,26 @@ Trois niveaux, du plus rapide au plus complet :
 3. **Sur l'iPhone** — lance `build-ipa` (`Run workflow`) en choisissant la branche, récupère l'IPA non
    signée dans les artefacts et installe-la avec Sideloadly ou AltStore : caméra et PC compris, c'est la
    vraie app.
+
+## Vérifier sans CI
+
+Tout ce que fait le job Windows de `ci.yml` se rejoue en local :
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/check.ps1
+```
+
+Il lance les tests de l'agent, compile la caméra virtuelle et valide les fichiers YAML des workflows
+(mêmes commandes que la CI). À faire avant de pousser, et à utiliser tel quel quand GitHub Actions est
+indisponible (quota, facturation). Le script travaille dans des dossiers séparés : l'agent et la caméra
+virtuelle peuvent rester en service pendant la vérification.
+
+Seul le job iOS a réellement besoin de macOS. Trois options :
+
+1. **GitHub Actions une fois le dépôt public** : les runners y sont gratuits, y compris macOS ;
+2. **[Codemagic](https://codemagic.io)** avec le [`codemagic.yaml`](codemagic.yaml) fourni — offre
+   gratuite avec runners macOS, aucun secret requis (compilation non signée) ;
+3. un Mac, avec les deux commandes du job `ios`.
 
 ## Latence
 

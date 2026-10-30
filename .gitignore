@@ -2,7 +2,7 @@
 pc/agent/target/
 
 # C++
-pc/vcam/build/
+pc/vcam/build*/
 pc/installer/build/
 
 # iOS (généré par XcodeGen)
@@ -23,3 +23,6 @@ __pycache__/
 
 # IPA téléchargées (artefacts de build, pas de sources)
 ipa/
+
+# Paquets de build locaux
+dist/
