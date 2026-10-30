@@ -24,3 +24,6 @@ __pycache__/
 
 # IPA téléchargées (artefacts de build, pas de sources)
 ipa/
+
+# Paquets de build locaux
+dist/
