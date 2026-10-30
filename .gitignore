@@ -2,8 +2,7 @@
 pc/agent/target/
 
 # C++
-pc/vcam/build/
-pc/vcam/build-check/
+pc/vcam/build*/
 pc/installer/build/
 
 # iOS (généré par XcodeGen)
