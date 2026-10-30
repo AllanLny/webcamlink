@@ -317,6 +317,10 @@ impl ShmBlock {
         self.write_u32(OFF_PRODUCER_STATE, state);
     }
 
+    pub fn producer_state(&self) -> u32 {
+        self.read_u32(OFF_PRODUCER_STATE)
+    }
+
     /// Publish one compact NV12 frame into the next slot.
     pub fn publish(&mut self, nv12: &[u8], pts_us: u64) -> Result<()> {
         if nv12.len() > self.slot_capacity as usize {
