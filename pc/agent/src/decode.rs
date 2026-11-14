@@ -34,6 +34,9 @@ pub struct H264Decoder {
     stream_info: MFT_OUTPUT_STREAM_INFO,
     width: u32,
     height: u32,
+    /// Height the decoder actually writes, before cropping: H.264 codes 1080p as
+    /// 1920x1088 and the chroma plane starts after those 1088 rows.
+    coded_height: u32,
     configured: bool,
     streaming: bool,
 }
@@ -53,6 +56,7 @@ impl H264Decoder {
             stream_info,
             width: 0,
             height: 0,
+            coded_height: 0,
             configured: false,
             streaming: false,
         })
@@ -73,6 +77,7 @@ impl H264Decoder {
 
         self.width = width;
         self.height = height;
+        self.coded_height = height;
         self.pick_output_type()?;
 
         // Without this, the decoder keeps a reordering queue of frames: bad for
@@ -121,6 +126,7 @@ impl H264Decoder {
                 unsafe { self.transform.SetOutputType(0, &candidate, 0) }
                     .context("SetOutputType NV12")?;
                 self.stream_info = unsafe { self.transform.GetOutputStreamInfo(0)? };
+                self.coded_height = height.max(self.height);
                 return Ok(candidate);
             }
             if first.is_none() {
@@ -138,6 +144,8 @@ impl H264Decoder {
         unsafe { self.transform.SetOutputType(0, &fallback, 0) }
             .context("SetOutputType (repli)")?;
         self.stream_info = unsafe { self.transform.GetOutputStreamInfo(0)? };
+        let size = unsafe { fallback.GetUINT64(&MF_MT_FRAME_SIZE) }.unwrap_or(0);
+        self.coded_height = mf::unpack_size(size).1.max(self.height);
         Ok(fallback)
     }
 
@@ -229,18 +237,19 @@ impl H264Decoder {
             let pts_us = unsafe { sample.GetSampleTime() }
                 .ok()
                 .map(|value| (value.max(0) as u64) / 10);
-            let mut frame = read_nv12(&sample, self.width, self.height)?;
+            let mut frame = read_nv12(&sample, self.width, self.height, self.coded_height)?;
             frame.pts_us = pts_us;
             frames.push(frame);
         }
     }
 }
 
-fn read_nv12(sample: &IMFSample, width: u32, height: u32) -> Result<DecodedFrame> {
+fn read_nv12(sample: &IMFSample, width: u32, height: u32, coded_height: u32) -> Result<DecodedFrame> {
     let width = width as usize;
     let height = height as usize;
+    let coded_height = (coded_height as usize).max(height);
     let mut nv12 = vec![0u8; width * height * 3 / 2];
-    let buffer = unsafe { sample.ConvertToContiguousBuffer() }.context("ConvertToContiguousBuffer")?;
+    let buffer = unsafe { sample.GetBufferByIndex(0) }.context("GetBufferByIndex")?;
 
     // `copy_nv12` strips the source padding: the resulting buffer is compact,
     // so the reported strides are always the width (returning the decoder's
@@ -250,7 +259,8 @@ fn read_nv12(sample: &IMFSample, width: u32, height: u32) -> Result<DecodedFrame
         let mut pitch = 0i32;
         unsafe {
             buffer2d.Lock2D(&mut scanline, &mut pitch)?;
-            copy_nv12(scanline, pitch.max(0) as usize, width, height, &mut nv12);
+            let pitch = if pitch > 0 { pitch as usize } else { width };
+            copy_nv12(scanline, pitch, width, height, coded_height, &mut nv12);
             buffer2d.Unlock2D()?;
         }
     } else {
@@ -258,7 +268,18 @@ fn read_nv12(sample: &IMFSample, width: u32, height: u32) -> Result<DecodedFrame
         let mut current = 0u32;
         unsafe {
             buffer.Lock(&mut pointer, None, Some(&mut current))?;
-            copy_nv12(pointer, width, width, height, &mut nv12);
+            // A 1-D buffer may still pad its rows. Its current length (not the
+            // allocated capacity: the MFT may size it for a 2-byte-per-pixel
+            // format) reveals the pitch when it divides exactly.
+            let length = current as usize;
+            let coded_bytes = (coded_height as u64) * 3 / 2;
+            let pitch = if coded_height > 0 && coded_bytes > 0 && length as u64 % coded_bytes == 0
+            {
+                ((length as u64 / coded_bytes) as usize).max(width)
+            } else {
+                width
+            };
+            copy_nv12(pointer, pitch, width, height, coded_height, &mut nv12);
             buffer.Unlock()?;
         }
     }
@@ -273,17 +294,59 @@ fn read_nv12(sample: &IMFSample, width: u32, height: u32) -> Result<DecodedFrame
     })
 }
 
-/// Copy NV12 (Y plane then interleaved UV plane) stripping row padding.
-unsafe fn copy_nv12(scanline: *const u8, pitch: usize, width: usize, height: usize, out: &mut [u8]) {
+/// Copy NV12 (Y plane then interleaved UV plane) stripping row padding. The
+/// chroma plane starts after `coded_height` rows: 1080p is coded as 1088 and
+/// the 8 padding rows are not part of the picture.
+unsafe fn copy_nv12(
+    scanline: *const u8,
+    pitch: usize,
+    width: usize,
+    height: usize,
+    coded_height: usize,
+    out: &mut [u8],
+) {
     for row in 0..height {
         let source = scanline.add(row * pitch);
         let destination = out.as_mut_ptr().add(row * width);
         std::ptr::copy_nonoverlapping(source, destination, width);
     }
-    let chroma_source = scanline.add(pitch * height);
+    let chroma_source = scanline.add(pitch * coded_height.max(height));
     for row in 0..height / 2 {
         let source = chroma_source.add(row * pitch);
         let destination = out.as_mut_ptr().add(width * height + row * width);
         std::ptr::copy_nonoverlapping(source, destination, width);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chroma_plane_starts_after_the_coded_height() {
+        // A 4x2 picture coded as 4x4: the decoder writes four luma rows and the
+        // chroma plane starts at row 4. Reading it at row `height` (2) would take
+        // the padding rows for chroma and shift the whole picture.
+        let (width, height, coded_height, pitch) = (4usize, 2usize, 4usize, 8usize);
+        let mut source = vec![0u8; pitch * coded_height + pitch * (coded_height / 2)];
+        for row in 0..coded_height {
+            source[row * pitch..row * pitch + width].fill(40 + row as u8);
+            source[row * pitch + width..(row + 1) * pitch].fill(99);
+        }
+        let chroma = pitch * coded_height;
+        for row in 0..coded_height / 2 {
+            source[chroma + row * pitch..chroma + row * pitch + width].fill(128);
+        }
+
+        let mut out = vec![0u8; width * height * 3 / 2];
+        unsafe { copy_nv12(source.as_ptr(), pitch, width, height, coded_height, &mut out) };
+
+        assert_eq!(&out[..width * height], &[40, 40, 40, 40, 41, 41, 41, 41]);
+        assert!(
+            out[width * height..].iter().all(|value| *value == 128),
+            "chroma décalée: {:?}",
+            &out[width * height..]
+        );
+        assert!(!out.contains(&99), "le remplissage de ligne ne doit pas être copié");
     }
 }

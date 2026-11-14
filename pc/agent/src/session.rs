@@ -79,6 +79,7 @@ pub struct Session {
     stream: TcpStream,
     decoder: FrameDecoder,
     pending: VecDeque<Frame>,
+    read_buffer: Box<[u8; READ_CHUNK]>,
     pub hello: Hello,
     pub caps: Option<Caps>,
     /// Ranges of the selected camera; `None` with a device that predates the
@@ -106,6 +107,7 @@ impl Session {
             stream,
             decoder: FrameDecoder::new(),
             pending: VecDeque::new(),
+            read_buffer: Box::new([0u8; READ_CHUNK]),
             hello: Hello::default(),
             caps: None,
             image_caps: None,
@@ -244,16 +246,8 @@ impl Session {
                 .set_read_timeout(Some(remaining.max(Duration::from_millis(1))))
                 .map_err(SessionError::Io)?;
 
-            let mut buffer = [0u8; READ_CHUNK];
-            match self.stream.read(&mut buffer) {
-                Ok(0) => return Err(SessionError::Closed),
-                Ok(count) => {
-                    let frames = self
-                        .decoder
-                        .push(&buffer[..count])
-                        .map_err(SessionError::Protocol)?;
-                    self.pending.extend(frames);
-                }
+            let count = match self.stream.read(&mut self.read_buffer[..]) {
+                Ok(count) => count,
                 Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
                     return Ok(None);
                 }
@@ -267,7 +261,15 @@ impl Session {
                 }
                 Err(error) if error.kind() == ErrorKind::Interrupted => continue,
                 Err(error) => return Err(SessionError::Io(error)),
+            };
+            if count == 0 {
+                return Err(SessionError::Closed);
             }
+            let frames = self
+                .decoder
+                .push(&self.read_buffer[..count])
+                .map_err(SessionError::Protocol)?;
+            self.pending.extend(frames);
         }
     }
 }

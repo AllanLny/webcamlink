@@ -220,6 +220,7 @@ private:
     std::vector<uint8_t> frame_;
     std::chrono::steady_clock::time_point last_frame_at_{};
     bool placeholder_active_ = false;
+    std::vector<uint8_t> incoming_;
     bool request_logged_ = false;
     bool size_mismatch_logged_ = false;
 };
@@ -924,12 +925,11 @@ HRESULT CameraStream::DeliverSample(IUnknown* token) {
     // Live source: never wait for the producer, the pipeline paces us. When
     // nothing new is ready, the previous frame is repeated for a moment so the
     // stream keeps its cadence.
-    std::vector<uint8_t> incoming;
     UINT32 width = 0;
     UINT32 height = 0;
-    const bool has_frame = shm_ && shm_->ReadFrame(incoming, width, height, 0);
+    const bool has_frame = shm_ && shm_->ReadFrame(incoming_, width, height, 0);
     const bool size_matches =
-        width == width_ && height == height_ && incoming.size() == static_cast<size_t>(frame_bytes_);
+        width == width_ && height == height_ && incoming_.size() == static_cast<size_t>(frame_bytes_);
     if (has_frame && !size_matches && !size_mismatch_logged_) {
         size_mismatch_logged_ = true;
         wchar_t line[192];
@@ -938,7 +938,7 @@ HRESULT CameraStream::DeliverSample(IUnknown* token) {
         wcl::LogLine(line);
     }
     if (has_frame && size_matches) {
-        frame_.swap(incoming);
+        frame_.swap(incoming_);
         last_frame_at_ = std::chrono::steady_clock::now();
     }
 
@@ -971,6 +971,7 @@ HRESULT CameraStream::DeliverSample(IUnknown* token) {
     }
 
     // Copy the frame, honouring the buffer's own stride when it is 2D.
+    UINT32 current_length = frame_bytes_;
     ComPtr<IMF2DBuffer2> buffer2d;
     if (SUCCEEDED(buffer.As(&buffer2d))) {
         BYTE* row = nullptr;
@@ -981,14 +982,19 @@ HRESULT CameraStream::DeliverSample(IUnknown* token) {
         if (FAILED(hr)) {
             return hr;
         }
+        const LONG stride = pitch > 0 ? pitch : static_cast<LONG>(width_);
         for (UINT32 y = 0; y < height_; ++y) {
-            memcpy(row + static_cast<ptrdiff_t>(y) * pitch, frame_.data() + y * width_, width_);
+            memcpy(row + static_cast<ptrdiff_t>(y) * stride, frame_.data() + y * width_, width_);
         }
         for (UINT32 y = 0; y < height_ / 2; ++y) {
-            memcpy(row + static_cast<ptrdiff_t>(height_ + y) * pitch,
+            memcpy(row + static_cast<ptrdiff_t>(height_ + y) * stride,
                    frame_.data() + width_ * height_ + y * width_, width_);
         }
         buffer2d->Unlock2D();
+        // The media type announces a tight stride. When the pipeline's buffer is
+        // padded, the sample's valid length is the padded one, not w*h*3/2.
+        const size_t span = static_cast<size_t>(stride) * height_ * 3 / 2;
+        current_length = static_cast<UINT32>(length == 0 ? span : (span < length ? span : length));
     } else {
         BYTE* data = nullptr;
         hr = buffer->Lock(&data, nullptr, nullptr);
@@ -998,7 +1004,7 @@ HRESULT CameraStream::DeliverSample(IUnknown* token) {
         memcpy(data, frame_.data(), frame_bytes_);
         buffer->Unlock();
     }
-    buffer->SetCurrentLength(frame_bytes_);
+    buffer->SetCurrentLength(current_length);
 
     // Live source: samples carry the same clock as MESourceStarted, otherwise
     // the pipeline sees them as stale and drops them (the client only gets
