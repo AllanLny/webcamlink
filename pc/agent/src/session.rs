@@ -17,6 +17,11 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub const DEFAULT_PORT: u16 = 5321;
 const READ_CHUNK: usize = 256 * 1024;
+/// Writes are buffered and time-limited: a stalled device must never block the
+/// read loop, otherwise the session deadlocks (the device waits for us to read
+/// while we wait for it to drain the socket).
+const WRITE_TIMEOUT: Duration = Duration::from_millis(5);
+const MAX_WRITE_BUFFER: usize = 1024 * 1024;
 
 #[derive(Debug, Clone)]
 pub enum Event {
@@ -80,6 +85,7 @@ pub struct Session {
     decoder: FrameDecoder,
     pending: VecDeque<Frame>,
     read_buffer: Box<[u8; READ_CHUNK]>,
+    write_buffer: Vec<u8>,
     pub hello: Hello,
     pub caps: Option<Caps>,
     /// Ranges of the selected camera; `None` with a device that predates the
@@ -103,11 +109,13 @@ impl Session {
     }
 
     fn from_stream(stream: TcpStream) -> Result<Self> {
+        stream.set_write_timeout(Some(WRITE_TIMEOUT))?;
         Ok(Self {
             stream,
             decoder: FrameDecoder::new(),
             pending: VecDeque::new(),
             read_buffer: Box::new([0u8; READ_CHUNK]),
+            write_buffer: Vec::new(),
             hello: Hello::default(),
             caps: None,
             image_caps: None,
@@ -184,7 +192,40 @@ impl Session {
 
     pub fn send(&mut self, message_type: MessageType, payload: Vec<u8>) -> Result<()> {
         let bytes = Frame::new(message_type, payload).encode();
-        self.stream.write_all(&bytes)?;
+        self.write_buffer.extend_from_slice(&bytes);
+        self.flush_writes()?;
+        Ok(())
+    }
+
+    /// Push what the socket accepts. A full socket keeps the rest buffered for
+    /// the next tick instead of blocking the caller.
+    fn flush_writes(&mut self) -> std::io::Result<()> {
+        while !self.write_buffer.is_empty() {
+            match self.stream.write(&self.write_buffer) {
+                Ok(0) => {
+                    return Err(std::io::Error::new(
+                        ErrorKind::WriteZero,
+                        "connexion fermée en écriture",
+                    ))
+                }
+                Ok(count) => {
+                    self.write_buffer.drain(..count);
+                }
+                Err(error)
+                    if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) =>
+                {
+                    break;
+                }
+                Err(error) if error.kind() == ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        if self.write_buffer.len() > MAX_WRITE_BUFFER {
+            return Err(std::io::Error::new(
+                ErrorKind::WouldBlock,
+                "tampon d'écriture saturé",
+            ));
+        }
         Ok(())
     }
 
@@ -233,6 +274,7 @@ impl Session {
 
     pub fn next_event_until(&mut self, deadline: Instant) -> Result<Option<Event>, SessionError> {
         loop {
+            self.flush_writes().map_err(SessionError::Io)?;
             if let Some(frame) = self.pending.pop_front() {
                 return Event::from_frame(frame).map(Some).map_err(SessionError::Protocol);
             }

@@ -21,6 +21,9 @@ final class LinkServer: ObservableObject {
     @Published private(set) var statusSummary = "—"
 
     private let queue = DispatchQueue(label: "com.allan.webcamlink.server")
+    /// File writes must never run on `queue`: a slow write there starves the
+    /// receive loop, the PC blocks writing, and both sides freeze.
+    private let logQueue = DispatchQueue(label: "com.allan.webcamlink.log")
     private var listener: NWListener?
     private var connection: NWConnection?
     private var pendingBytes = 0
@@ -28,9 +31,9 @@ final class LinkServer: ObservableObject {
     private var cameras: [WclCameraDescriptor] = []
     private var usedFallbackBinding = false
 
-    /// Log file in Documents — survives a crash, unlike the in-app journal.
+    /// Log file in Caches: survives a crash, stays out of iCloud Documents.
     private let logFileURL: URL? = {
-        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?
+        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
             .appendingPathComponent("webcamlink.log")
     }()
 
@@ -287,7 +290,7 @@ final class LinkServer: ObservableObject {
         formatter.dateFormat = "HH:mm:ss.SSS"
         let stamp = formatter.string(from: Date())
         let line = "[\(stamp)] \(message)"
-        appendToLogFile(line)
+        logQueue.async { [weak self] in self?.appendToLogFile(line) }
         publish {
             self.logLines.append(line)
             if self.logLines.count > 400 {
