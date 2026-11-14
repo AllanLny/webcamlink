@@ -19,6 +19,8 @@ que voient Teams, Zoom, OBS, l'app Caméra, etc.
 - [Dépannage](#dépannage)
 - [Développement sans iPhone](#développement-sans-iphone)
 - [Aperçu de l'app iOS (sans Mac)](#aperçu-de-lapp-ios-sans-mac)
+- [Vérifier sans CI](#vérifier-sans-ci)
+- [Latence](#latence)
 - [Structure du dépôt](#structure-du-dépôt)
 - [État du projet](#état-du-projet)
 - [Mode automatique (iOS)](#mode-automatique-ios)
@@ -138,7 +140,7 @@ mirror=0
 | Clé | Valeurs | Défaut |
 |---|---|---|
 | `width` / `height` | 160–3840 / 120–2160 — 4K = plafond de la mémoire partagée | 1920 / 1080 |
-| `fps` | 1–60 | 30 |
+| `fps` | 1–60 (le 4K est ramené à 30 : au-delà, l'encodeur iPhone décroche) | 30 |
 | `bitrate_kbps` | 500–100000 | 20000 |
 | `preference` | `auto`, `back_wide`, `back_ultra_wide`, `back_tele`, `front` | `auto` |
 | `mirror` | `0` / `1` | `0` |
@@ -228,6 +230,41 @@ Trois niveaux, du plus rapide au plus complet :
 3. **Sur l'iPhone** — lance `build-ipa` (`Run workflow`) en choisissant la branche, récupère l'IPA non
    signée dans les artefacts et installe-la avec Sideloadly ou AltStore : caméra et PC compris, c'est la
    vraie app.
+
+## Vérifier sans CI
+
+Tout ce que fait le job Windows de `ci.yml` se rejoue en local :
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/check.ps1
+```
+
+Il lance les tests de l'agent, compile la caméra virtuelle et valide les fichiers YAML des workflows
+(mêmes commandes que la CI). À faire avant de pousser, et à utiliser tel quel quand GitHub Actions est
+indisponible (quota, facturation). Le script travaille dans des dossiers séparés : l'agent et la caméra
+virtuelle peuvent rester en service pendant la vérification.
+
+Seul le job iOS a réellement besoin de macOS. Trois options :
+
+1. **GitHub Actions une fois le dépôt public** : les runners y sont gratuits, y compris macOS ;
+2. **[Codemagic](https://codemagic.io)** avec le [`codemagic.yaml`](codemagic.yaml) fourni — offre
+   gratuite avec runners macOS, aucun secret requis (compilation non signée) ;
+3. un Mac, avec les deux commandes du job `ios`.
+
+## Latence
+
+La chaîne complète (iPhone → PC → application) cumule : capture et encodage côté iPhone (~1 trame),
+transport USB, décodage Media Foundation (mesuré **12,4 ms**) et rendu (**7 ms**) en 1080p30, puis le
+tampon de l'application cliente.
+
+Pour la réduire :
+
+- rester en **1080p** : le 4K coûte cher à l'encodage iPhone et n'apporte rien à une webcam ;
+- côté client, désactiver ce qui tamponne (OBS : *Buffering* désactivé, pas de *Render Delay*) ;
+- éviter les conversions de couleur intermédiaires — la caméra virtuelle livre du NV12.
+
+Mesure de bout en bout : afficher un chronomètre sur l'iPhone et photographier l'écran du PC ; l'écart
+entre les deux est la latence réelle, application comprise.
 
 ## Structure du dépôt
 

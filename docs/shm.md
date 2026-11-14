@@ -103,7 +103,9 @@ Le producteur lit `consumer_active`/`consumer_*` à chaque publication et :
    caméra** (redémarrage de Windows). L'agent s'aligne dessus (`SetFormat`).
 3. Attend `WclFrameReady` (timeout 0 : c'est le pipeline qui cadence), lit `latest_slot`, copie le
    slot (seqlock : relire `sequence` avant/après ; abandonner si impair ou changé). Sans nouvelle
-   frame, la précédente est répétée.
+   frame, la précédente est répétée **une seconde au plus** : au-delà, ou dès que
+   `producer_state` n'est plus « flux actif », la DLL affiche l'image de remplacement — un flux
+   arrêté (app iPhone en arrière-plan, session perdue) doit se voir, pas se figer.
 4. Tant qu'aucune frame n'a été reçue (première ouverture) : image de remplacement (dégradé sombre),
    sans erreur.
 5. À la fermeture : `consumer_active=0`.

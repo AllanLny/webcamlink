@@ -393,6 +393,14 @@ fn main() -> Result<()> {
         }
 
         if drop_session {
+            // The DLL shows its idle placeholder while the producer is not
+            // streaming: saying so explicitly avoids a frozen last frame until
+            // the one-second staleness timeout kicks in.
+            if let Some(block) = shm.as_mut() {
+                if block.producer_state() == PRODUCER_STREAMING {
+                    block.set_producer_state(PRODUCER_STOPPED, 0);
+                }
+            }
             session = None;
             decoder = None;
         }
@@ -541,6 +549,17 @@ fn choose_format(
         .or_else(|| if control.fps > 0 { Some(control.fps as u16) } else { None })
         .unwrap_or(if settings.fps > 0 { settings.fps as u16 } else { 30 });
     let fps = u32::from(wanted_fps).min(u32::from(format.max_fps)).max(1);
+    // 4K à 60 fps met l'encodeur de l'iPhone à genoux : constaté sur iPhone 11,
+    // la session tombe à ~5 fps puis se ferme, et l'application reste bloquée
+    // jusqu'au redémarrage. Le 4K reste utile en 30 fps.
+    let fps = if u64::from(format.width) * u64::from(format.height) >= 3840 * 2160 {
+        if fps > 30 {
+            log::info!("4K : images/s ramenées de {fps} à 30 (limite de l'encodeur iPhone)");
+        }
+        fps.min(30)
+    } else {
+        fps
+    };
     Ok((format.width, format.height, fps as u16))
 }
 
